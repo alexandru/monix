@@ -87,7 +87,7 @@ object CancelableFuture {
     *        `onComplete` callback.
     */
   def successful[A](value: A): CancelableFuture[A] =
-    new Now[A](Success(value))
+    new Pure[A](Success(value))
 
   /** Promotes a strict `Throwable` to a [[CancelableFuture]] that's
     * already complete with a failure.
@@ -96,7 +96,7 @@ object CancelableFuture {
     *        `onComplete` callback.
     */
   def failed[A](e: Throwable): CancelableFuture[A] =
-    new Now[A](Failure(e))
+    new Pure[A](Failure(e))
 
   /** Promotes a strict `value` to a [[CancelableFuture]] that's
     * already complete.
@@ -135,7 +135,7 @@ object CancelableFuture {
     *        in the `onComplete` callback.
     */
   def fromTry[A](value: Try[A]): CancelableFuture[A] =
-    new Now[A](value)
+    new Pure[A](value)
 
   /** Given a registration function that can execute an asynchronous
     * process, executes it and builds a [[CancelableFuture]] value
@@ -238,7 +238,7 @@ object CancelableFuture {
   }
 
   /** An internal [[CancelableFuture]] implementation. */
-  private[execution]  final class Now[+A](immediate: Try[A]) extends CancelableFuture[A] {
+  private[execution]  final class Pure[+A](immediate: Try[A]) extends CancelableFuture[A] {
     def ready(atMost: Duration)(implicit permit: CanAwait): this.type = this
     def result(atMost: Duration)(implicit permit: CanAwait): A = immediate.get
 
@@ -252,8 +252,8 @@ object CancelableFuture {
     // Overriding methods for getting CancelableFuture in return
     override def failed: CancelableFuture[Throwable] =
       immediate match {
-        case Success(_) => new Now(Failure(new NoSuchElementException("failed")))
-        case Failure(ex) => new Now(Success(ex))
+        case Success(_) => new Pure(Failure(new NoSuchElementException("failed")))
+        case Failure(ex) => new Pure(Success(ex))
       }
 
     override def transform[S](f: (Try[A]) => Try[S])(implicit executor: ExecutionContext): CancelableFuture[S] = {
@@ -416,7 +416,7 @@ object CancelableFuture {
 
   // Reusable reference to use in `CatsInstances.attempt`
   private[this] final val liftToEitherRef: (Try[Any] => CancelableFuture[Either[Throwable, Any]]) =
-    tryA => new Now(Success(tryA match {
+    tryA => new Pure(Success(tryA match {
       case Success(a) => Right(a)
       case Failure(e) => Left(e)
     }))
