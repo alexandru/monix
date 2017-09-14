@@ -18,13 +18,13 @@
 package monix.reactive.internal.builders
 
 import monix.execution.cancelables.CompositeCancelable
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.misc.NonFatal
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
 
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.Success
 
 private[reactive] final
@@ -63,7 +63,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
     // MUST BE synchronized by `self`
     var hasElemA5 = false
     // MUST BE synchronized by `self`
-    var continueP = Promise[Ack]()
+    var continueP = FastFuture.promise[Ack]
     // MUST BE synchronized by `self`
     var completedCount = 0
 
@@ -103,8 +103,8 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           }
       }
 
-      continueP.tryCompleteWith(lastAck)
-      continueP = Promise[Ack]()
+      continueP.tryUnsafeCompleteWith(lastAck)
+      continueP = FastFuture.promise
       lastAck
     }
 
@@ -160,7 +160,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           if (hasElemA2 && hasElemA3 && hasElemA4 && hasElemA5)
             signalOnNext(elemA1, elemA2, elemA3, elemA4, elemA5)
           else
-            continueP.future
+            continueP
         }
       }
 
@@ -183,7 +183,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           if (hasElemA1 && hasElemA3 && hasElemA4 && hasElemA5)
             signalOnNext(elemA1, elemA2, elemA3, elemA4, elemA5)
           else
-            continueP.future
+            continueP
         }
       }
 
@@ -206,7 +206,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           if (hasElemA1 && hasElemA2 && hasElemA4 && hasElemA5)
             signalOnNext(elemA1, elemA2, elemA3, elemA4, elemA5)
           else
-            continueP.future
+            continueP
         }
       }
 
@@ -229,7 +229,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           if (hasElemA1 && hasElemA2 && hasElemA3 && hasElemA5)
             signalOnNext(elemA1, elemA2, elemA3, elemA4, elemA5)
           else
-            continueP.future
+            continueP
         }
       }
 
@@ -252,7 +252,7 @@ class Zip5Observable[A1,A2,A3,A4,A5,+R]
           if (hasElemA1 && hasElemA2 && hasElemA3 && hasElemA4)
             signalOnNext(elemA1, elemA2, elemA3, elemA4, elemA5)
           else
-            continueP.future
+            continueP
         }
       }
 

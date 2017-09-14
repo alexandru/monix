@@ -20,7 +20,7 @@ package monix.execution
 import cats.{CoflatMap, Eval, Monad, MonadError, StackSafeMonad}
 import monix.execution.FastFuture.LightPromise
 import monix.execution.atomic.{AtomicAny, PaddingStrategy}
-import monix.execution.internal.BlockingOps
+import monix.execution.internal.{BlockingOps, MonixFuture}
 import monix.execution.misc.NonFatal
 import monix.execution.schedulers.TrampolineExecutionContext.immediate
 import monix.execution.schedulers.TrampolinedRunnable
@@ -68,7 +68,7 @@ import scala.util.{Failure, Success, Try}
   * and [[monix.execution.FastFuture.failed FastFuture.failed]] for
   * building already completed `FastFuture` values.
   */
-sealed abstract class FastFuture[+A] extends Future[A] {
+abstract class FastFuture[+A] extends Future[A] with MonixFuture[A] {
   // Abstract method, inherited
   def onComplete[U](f: (Try[A]) => U)(implicit ec: ExecutionContext): Unit
   // Abstract method, inherited
@@ -295,8 +295,8 @@ object FastFuture {
     * This provides an alternative to Scala's
     * [[scala.concurrent.Promise Promise]].
     */
-  def promise[A](implicit ec: ExecutionContext): LightPromise[A] =
-    new LightPromise()(ec)
+  def promise[A]: LightPromise[A] =
+    new LightPromise()
 
   /** Promotes a strict `value` to a [[FastFuture]] that's
     * already complete.
@@ -465,9 +465,7 @@ object FastFuture {
     *   val future: FastFuture[Int] = promise
     * }}}
     */
-  final class LightPromise[A] private (
-    private[this] val state: AtomicAny[AnyRef])
-    (implicit ec: ExecutionContext)
+  final class LightPromise[A] private (private[this] val state: AtomicAny[AnyRef], isEmpty: Boolean)
     extends FastFuture[A] {
 
     /** Default constructor.
@@ -475,12 +473,9 @@ object FastFuture {
       * @param ps is the [[PaddingStrategy]] to apply to the internal
       *        atomic reference that is used for keeping the current
       *        state
-      *
-      * @param ec is the `ExecutionContext` needed for managing
-      *        internal asynchronous boundaries
       */
-    def this(ps: PaddingStrategy = PaddingStrategy.LeftRight128)(implicit ec: ExecutionContext) =
-      this(AtomicAny.withPadding[AnyRef](null, ps))
+    def this(ps: PaddingStrategy = PaddingStrategy.LeftRight128) =
+      this(AtomicAny.withPadding[AnyRef](null, ps), true)
 
     // State:
     //  - null: initial state
@@ -489,23 +484,118 @@ object FastFuture {
     //  - Try[A]: completed value
 
     private[this] var completeRef: (Try[A]) => Unit = {
-      new OnComplete(state)(ec).asInstanceOf[Try[A] => Unit]
+      if (isEmpty)
+        new OnComplete(state).asInstanceOf[Try[A] => Unit]
+      else
+        spentComplete
     }
 
-    def tryComplete(r: Try[A]): Unit = {
+    /** Tries completing this [[FastFuture]] reference with the given
+      * `value`, but fails silently in case the `FastFuture` was
+      * already completed before.
+      *
+      * This is the equivalent of
+      * [[scala.concurrent.Promise.tryComplete Promise.tryComplete]],
+      * however its usage is unsafe.
+      *
+      * Compared with the standard `Future` implementation, this one
+      * uses `getAndSet` to synchronize between threads. Calling
+      * complete multiple times on the same `Future` can end up
+      * mutating the future's inner value. So consider this scenario:
+      *
+      * {{{
+      *   p.tryComplete(Success(1))
+      *   // ... concurrently ...
+      *   p.tryComplete(Success(2))
+      * }}}
+      *
+      * Lets say that the second call happens ''after'' the first call.
+      * We can have two possible outcomes:
+      *
+      *  1. the second call is completely ignored, since there are
+      *     basic (non thread-safe) protections in place
+      *  1. the second call modifies the future reference such that
+      *     subsequent listeners will see `2` instead of `1`
+      *
+      * *WARNING*: don't use this method unless its inherent unsafety
+      * described above doesn't matter.
+      *
+      * NOTE that even if the worst case scenario happens (i.e. number 2
+      * above), ''all subsequent listeners'' still get completed,
+      * the only unknown being what value they receive.
+      */
+    def tryUnsafeComplete(value: Try[A]): Boolean = {
       val ref = completeRef
       if (ref ne spentComplete)
-        try { ref(r) } catch { case _: IllegalStateException => }
+        try { ref(value); true }
+        catch { case _: IllegalStateException => false }
+      else
+        false
     }
 
+    /** Completes this `FastFuture` reference with the given value.
+      *
+      * **WARNING:** by contract this function should be called
+      * ''at most once''. Calling it a second time is a contract
+      * violation that will:
+      *
+      *   1. throw an `IllegalStateException`
+      *   2. possibly mutate the underlying `Future` reference, in case
+      *      the basic (non-threadsafe) protections that it has in
+      *      place fails
+      *
+      * NOTE this is a method returning a function reference, making
+      * it easier to pass it as a reference to functions expecting
+      * callbacks, being memory efficient and releasing the internal
+      * callback implementation (for GC purposes and basic protection)
+      * after it is called once.
+      *
+      * @see [[tryUnsafeComplete]]
+      *
+      * @throws `IllegalStateException` in case it's called a second time
+      */
     def complete: (Try[A] => Unit) = {
       val ref = completeRef
       if (ref ne spentComplete) completeRef = spentComplete
       ref
     }
 
+    /** Completes this `FastFuture` with a successful `value`.
+      *
+      * The equivalent of
+      * [[scala.concurrent.Promise.success Promise.success]].
+      */
+    def success(value: A): Unit =
+      complete(Success(value))
+
+    /** Completes this `FastFuture` with a failure.
+      *
+      * The equivalent of
+      * [[scala.concurrent.Promise.failure Promise.failure]].
+      */
+    def failure(e: Throwable): Unit =
+      complete(Failure(e))
+
+    /** Given a [[scala.concurrent.Future Future]] reference,
+      *
+      * The equivalent of
+      * [[scala.concurrent.Promise.completeWith Promise.completeWith]].
+      */
     def completeWith(f: Future[A]): Unit =
       f.onComplete(complete)(immediate)
+
+    /** Completes this promise with the value of the given `Future`
+      * on completion.
+      *
+      * The equivalent of
+      * [[scala.concurrent.Promise.tryCompleteWith Promise.tryCompleteWith]].
+      *
+      * *WARNING:* read the fine print on [[tryUnsafeComplete]].
+      */
+    def tryUnsafeCompleteWith(f: Future[A]): Unit = {
+      if (f.isCompleted) tryUnsafeComplete(f.value.get)
+      else f.onComplete(tryUnsafeComplete)(immediate)
+    }
 
     override def value: Option[Try[A]] =
       state.get match {
@@ -552,6 +642,15 @@ object FastFuture {
       _onComplete(f, mkCallback)
     override def onCompleteLight[U](f: (Try[A]) => U)(implicit ec: ExecutionContext): Unit =
       _onComplete(f, mkTrampolinedCallback)
+  }
+
+  object LightPromise {
+    /** Creates an already completed [[LightPromise]].
+      *
+      * The equivalent of [[scala.concurrent.Promise.successful]].
+      */
+    def fromTry[A](value: Try[A]): LightPromise[A] =
+      new LightPromise[A](AtomicAny[AnyRef](value), false)
   }
 
   /** A [[FastFuture]] instance that will never complete. */
@@ -610,12 +709,11 @@ object FastFuture {
   )
 
   private final class OnComplete(state: AtomicAny[AnyRef])
-    (implicit ec: ExecutionContext)
     extends (Try[Any] => Any) {
 
-    def execute(listener: Listener, result: Try[Any]): Unit = {
-      val mk = listener.mkCallback
-      listener.context.execute(mk(listener.call, result, ec))
+    def execute(l: Listener, result: Try[Any]): Unit = {
+      val mk = l.mkCallback
+      l.context.execute(mk(l.call, result, l.context))
     }
 
     override def apply(result: Try[Any]): Unit = {

@@ -17,11 +17,15 @@
 
 package monix.execution.misc
 
-import scala.concurrent.{Future, Promise}
+import monix.execution.FastFuture
+import monix.execution.FastFuture.LightPromise
+
+import scala.concurrent.Future
 import scala.collection.immutable.Queue
 import monix.execution.atomic.AtomicAny
 import monix.execution.atomic.PaddingStrategy.LeftRight128
 import monix.execution.misc.AsyncQueue.State
+
 import scala.annotation.tailrec
 
 /** And asynchronous queue implementation.
@@ -44,16 +48,16 @@ final class AsyncQueue[A] private (elems: Queue[A]) extends Serializable {
         val update = State(newQ, promises)
 
         if (stateRef.compareAndSet(current, update))
-          Future.successful(e)
+          FastFuture.successful(e)
         else
           poll()
       }
       else {
-        val p = Promise[A]()
-        val update = State(elements, promises.enqueue(p))
+        val promise = FastFuture.promise[A]
+        val update = State(elements, promises.enqueue(promise))
 
         if (stateRef.compareAndSet(current, update))
-          p.future
+          promise
         else
           poll()
       }
@@ -104,5 +108,5 @@ object AsyncQueue {
     new AsyncQueue(queue)
 
   private final
-  case class State[A](elements: Queue[A], promises: Queue[Promise[A]])
+  case class State[A](elements: Queue[A], promises: Queue[LightPromise[A]])
 }

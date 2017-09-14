@@ -18,7 +18,7 @@
 package monix.reactive.internal.operators
 
 import monix.eval.Task
-import monix.execution.Ack
+import monix.execution.{Ack, FastFuture}
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.atomic.Atomic
 import monix.execution.misc.NonFatal
@@ -40,7 +40,7 @@ private[reactive] final class EvalOnEarlyStopOperator[A](onStop: Task[Unit])
       def onNext(elem: A): Future[Ack] = {
         val result =
           try out.onNext(elem)
-          catch { case NonFatal(ex) => Future.failed(ex) }
+          catch { case NonFatal(ex) => FastFuture.failed(ex) }
 
         val task = Task.fromFuture(result)
           .onErrorHandle { ex => onError(ex); Stop }

@@ -20,6 +20,7 @@ package monix.execution
 import cats.{CoflatMap, Eval, Monad, MonadError, StackSafeMonad}
 import monix.execution.Cancelable.IsDummy
 import monix.execution.cancelables.ChainedCancelable
+import monix.execution.internal.MonixFuture
 import monix.execution.schedulers.TrampolinedRunnable
 
 import scala.concurrent._
@@ -31,7 +32,7 @@ import scala.util.control.NonFatal
 /** Represents an asynchronous computation that can be canceled
   * as long as it isn't complete.
   */
-trait CancelableFuture[+A] extends Future[A] with Cancelable {
+trait CancelableFuture[+A] extends Future[A] with Cancelable with MonixFuture[A] {
   // Overriding methods for getting CancelableFuture in return
 
   // Abstract

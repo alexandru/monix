@@ -19,13 +19,13 @@ package monix.reactive.internal.operators
 
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.cancelables.{CompositeCancelable, MultiAssignmentCancelable}
-import monix.execution.misc.NonFatal
-import monix.execution.{Ack, Cancelable}
 import monix.execution.exceptions.CompositeException
+import monix.execution.misc.NonFatal
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
 import scala.collection.mutable
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 private[reactive] final
 class FlatScanObservable[A,R](
@@ -60,7 +60,7 @@ class FlatScanObservable[A,R](
         mutable.ArrayBuffer.empty[Throwable] else null
 
       def onNext(elem: A): Future[Ack] = {
-        val upstreamPromise = Promise[Ack]()
+        val upstreamPromise = FastFuture.promise[Ack]
 
         // Protects calls to user code from within the operator and
         // stream the error downstream if it happens, but if the
@@ -77,7 +77,7 @@ class FlatScanObservable[A,R](
 
             def onNext(elem: R): Future[Ack] = {
               if (upstreamWantsOnError) {
-                upstreamPromise.trySuccess(Continue)
+                upstreamPromise.tryUnsafeComplete(Continue.AsSuccess)
                 childAck = Stop
               } else {
                 currentState = elem
@@ -95,7 +95,7 @@ class FlatScanObservable[A,R](
               } else {
                 // Error happened, so signaling both the main thread that
                 // it should stop and the downstream consumer of the error
-                upstreamPromise.trySuccess(Stop)
+                upstreamPromise.tryUnsafeComplete(Stop.AsSuccess)
                 self.signalOnError(ex)
               }
             }
@@ -109,7 +109,7 @@ class FlatScanObservable[A,R](
             }
           })
 
-          upstreamPromise.future.syncTryFlatten
+          upstreamPromise.syncTryFlatten
         } catch {
           case NonFatal(ex) if streamError =>
             onError(ex)

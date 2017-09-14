@@ -20,14 +20,14 @@ package monix.reactive.internal.operators
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.atomic.Atomic
 import monix.execution.atomic.PaddingStrategy.LeftRight128
-import monix.execution.misc.NonFatal
-import monix.execution.{Ack, Cancelable}
 import monix.execution.exceptions.CompositeException
+import monix.execution.misc.NonFatal
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
 
 import scala.annotation.tailrec
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.Failure
 
 /** Implementation for `Observable.concatMap`.
@@ -121,7 +121,7 @@ private[reactive] final class ConcatMapObservable[A, B]
       // we can no longer stream errors downstream
       var streamErrors = true
       try {
-        val asyncUpstreamAck = Promise[Ack]()
+        val asyncUpstreamAck = FastFuture.promise[Ack]
         val child = f(elem)
         // No longer allowed to stream errors downstream
         streamErrors = false
@@ -159,7 +159,7 @@ private[reactive] final class ConcatMapObservable[A, B]
                 // active; the `getAndSet(WaitComplete)` however will
                 // stop it and we are free to send the final error
                 out.onError(ex)
-                asyncUpstreamAck.trySuccess(Stop)
+                asyncUpstreamAck.tryUnsafeComplete(Stop.AsSuccess)
 
               case WaitComplete(otherEx, _) =>
                 // Branch happens when the main subscriber has already
@@ -170,7 +170,7 @@ private[reactive] final class ConcatMapObservable[A, B]
                 otherEx.foreach(scheduler.reportFailure)
                 // Send our immediate error downstream and stop everything
                 out.onError(ex)
-                asyncUpstreamAck.trySuccess(Stop)
+                asyncUpstreamAck.tryUnsafeComplete(Stop.AsSuccess)
 
               case Cancelled =>
                 // User cancelled, but we have to log errors somewhere
@@ -191,13 +191,13 @@ private[reactive] final class ConcatMapObservable[A, B]
                 // to continue with the next child observable
                 ack.value match {
                   case Some(result) =>
-                    asyncUpstreamAck.tryComplete(result)
+                    asyncUpstreamAck.tryUnsafeComplete(result)
                   case None =>
-                    asyncUpstreamAck.tryCompleteWith(ack)
+                    asyncUpstreamAck.tryUnsafeCompleteWith(ack)
                 }
 
               case Cancelled =>
-                asyncUpstreamAck.trySuccess(Stop)
+                asyncUpstreamAck.tryUnsafeComplete(Stop.AsSuccess)
 
               case WaitComplete(exOpt, _) =>
                 // An `onComplete` or `onError` event happened since
@@ -238,7 +238,7 @@ private[reactive] final class ConcatMapObservable[A, B]
 
           case WaitOnActiveChild =>
             // Expected outcome for async observables
-            asyncUpstreamAck.future.syncTryFlatten
+            asyncUpstreamAck.syncTryFlatten
 
           case previous @ WaitComplete(_, _) =>
             // Branch that can happen in case the child has finished

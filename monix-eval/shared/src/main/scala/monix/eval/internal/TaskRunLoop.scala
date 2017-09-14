@@ -401,7 +401,7 @@ private[eval] object TaskRunLoop {
 
       val context = Context(scheduler)
       // Using FastFuture because it's awesome :-)
-      val p = FastFuture.promise[Any](context.scheduler)
+      val p = FastFuture.promise[Any]
       val cb: Callback[Any] = Callback.fromTryCallback(p.complete)
 
       if (forceAsync)

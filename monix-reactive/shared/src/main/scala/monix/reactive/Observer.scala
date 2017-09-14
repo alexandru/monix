@@ -20,15 +20,16 @@ package monix.reactive
 import java.io.PrintStream
 
 import monix.execution.Ack.{Continue, Stop}
-import monix.execution.cancelables.BooleanCancelable
+import monix.execution.FastFuture.LightPromise
 import monix.execution._
+import monix.execution.cancelables.BooleanCancelable
 import monix.execution.misc.NonFatal
 import monix.reactive.internal.rstreams._
 import monix.reactive.observers.Subscriber
 import org.reactivestreams.{Subscriber => RSubscriber}
 
 import scala.annotation.tailrec
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.Success
 
 
@@ -189,7 +190,7 @@ object Observer {
   def feed[A](target: Observer[A], subscription: BooleanCancelable, iterator: Iterator[A])
     (implicit s: Scheduler): Future[Ack] = {
 
-    def scheduleFeedLoop(promise: Promise[Ack], iterator: Iterator[A]): Future[Ack] = {
+    def scheduleFeedLoop(promise: LightPromise[Ack], iterator: Iterator[A]): Future[Ack] = {
       s.execute(new Runnable {
         private[this] val em = s.executionModel
 
@@ -230,12 +231,12 @@ object Observer {
         }
       })
 
-      promise.future.syncTryFlatten
+      promise.syncTryFlatten
     }
 
     try {
       if (iterator.hasNext)
-        scheduleFeedLoop(Promise[Ack](), iterator)
+        scheduleFeedLoop(FastFuture.promise, iterator)
       else
         Continue
     } catch {

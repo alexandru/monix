@@ -17,11 +17,10 @@
 
 package monix.reactive.observers
 
-import monix.execution.Ack
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.misc.NonFatal
-
-import scala.concurrent.{Future, Promise}
+import monix.execution.{Ack, FastFuture}
+import scala.concurrent.Future
 import scala.util.Try
 
 
@@ -80,9 +79,9 @@ final class SafeSubscriber[-A] private (subscriber: Subscriber[A])
       handleFailure(ack.value.get)
     else {
       // Protecting against asynchronous errors
-      val p = Promise[Ack]()
-      ack.onComplete { result => p.success(handleFailure(result)) }
-      p.future
+      val promise = FastFuture.promise[Ack]
+      ack.onComplete { result => promise.success(handleFailure(result)) }
+      promise
     }
   }
 
@@ -102,7 +101,7 @@ final class SafeSubscriber[-A] private (subscriber: Subscriber[A])
       if (ack eq Stop) isDone = true
       ack
     } catch {
-      case NonFatal(ex) =>
+      case NonFatal(_) =>
         signalError(value.failed.get)
         Stop
     }

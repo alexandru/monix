@@ -40,8 +40,8 @@ import monix.reactive.subjects._
 import org.reactivestreams.{Publisher => RPublisher, Subscriber => RSubscriber}
 
 import scala.collection.mutable
+import scala.concurrent.Future
 import scala.concurrent.duration.{Duration, FiniteDuration}
-import scala.concurrent.{Future, Promise}
 
 /** The `Observable` type that implements the Reactive Pattern.
   *
@@ -3453,10 +3453,10 @@ abstract class Observable[+A] extends Serializable { self =>
     * by the source it executes the given callback.
     */
   final def foreach(cb: A => Unit)(implicit s: Scheduler): CancelableFuture[Unit] = {
-    val p = Promise[Unit]()
-    val onFinish = Callback.fromPromise(p)
+    val p = FastFuture.promise[Unit]
+    val onFinish = Callback.fromTryCallback(p.complete)
     val c = unsafeSubscribeFn(new ForeachSubscriber[A](cb, onFinish, s))
-    CancelableFuture(p.future, c)
+    CancelableFuture(p, c)
   }
 }
 

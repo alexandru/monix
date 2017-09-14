@@ -18,6 +18,7 @@
 package monix.execution
 
 import scala.concurrent.Promise
+import scala.util.{Success, Try}
 
 /** A simple listener interface, to be used in observer pattern
   * implementations or for specifying asynchronous callbacks.
@@ -48,4 +49,18 @@ object Listener {
   /** Converts a Scala `Promise` to a [[Listener]]. */
   def fromPromise[A](p: Promise[A]): Listener[A] =
     new Listener[A] { def onValue(value: A) = p.success(value) }
+
+  /** Returns a [[Listener]] instance that will complete the given
+    * `Try`-enabled callback.
+    *
+    * For example this works well with
+    * [[monix.execution.FastFuture.LightPromise LightPromise]]:
+    *
+    * {{{
+    *   val p = FastFuture.promise[Int]
+    *   Listener.fromTryCallback(p.complete)
+    * }}}
+    */
+  def fromTryCallback[A](f: Try[A] => Unit): Listener[A] =
+    new Listener[A] { def onValue(value: A): Unit = f(Success(value)) }
 }

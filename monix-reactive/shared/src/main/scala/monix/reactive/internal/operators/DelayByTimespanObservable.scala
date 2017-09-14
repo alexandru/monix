@@ -71,7 +71,7 @@ class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
           if (!isDone.getAndSet(true)) {
             hasError = true
             try out.onError(ex) finally {
-              if (ack != null) ack.tryComplete(Stop.AsSuccess)
+              if (ack != null) ack.tryUnsafeComplete(Stop.AsSuccess)
               task.cancel()
             }
           }

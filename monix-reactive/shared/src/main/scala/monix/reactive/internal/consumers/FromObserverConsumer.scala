@@ -19,7 +19,7 @@ package monix.reactive.internal.consumers
 
 import monix.eval.Callback
 import monix.execution.Ack.Stop
-import monix.execution.{Ack, Scheduler}
+import monix.execution.{Ack, FastFuture, Scheduler}
 import monix.execution.atomic.Atomic
 import monix.execution.cancelables.AssignableCancelable
 import monix.execution.misc.NonFatal
@@ -58,7 +58,7 @@ final class FromObserverConsumer[In](f: Scheduler => Observer[In])
 
           def onNext(elem: In): Future[Ack] = {
             val ack = try out.onNext(elem) catch {
-              case NonFatal(ex) => Future.failed(ex)
+              case NonFatal(ex) => FastFuture.failed(ex)
             }
 
             ack.syncOnComplete {

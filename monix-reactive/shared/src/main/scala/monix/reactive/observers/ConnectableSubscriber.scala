@@ -18,11 +18,11 @@
 package monix.reactive.observers
 
 import monix.execution.Ack.{Continue, Stop}
-import monix.execution.{Ack, CancelableFuture, Scheduler}
+import monix.execution.{Ack, CancelableFuture, FastFuture, Scheduler}
 import monix.reactive.Observable
 
 import scala.collection.mutable
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 /** Wraps a [[Subscriber]] into an implementation that abstains from emitting items until the call
@@ -85,8 +85,8 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
   // Promise guaranteed to be fulfilled once isConnected is
   // seen as true and used for back-pressure.
   // MUST BE synchronized by `self`, only available if isConnected == false
-  private[this] var connectedPromise = Promise[Ack]()
-  private[this] var connectedFuture = connectedPromise.future
+  private[this] var connectedPromise = FastFuture.promise[Ack]
+  private[this] var connectedFuture: FastFuture[Ack] = connectedPromise
 
   // Volatile that is set to true once the buffer is drained.
   // Once visible as true, it implies that the queue is empty
@@ -95,7 +95,7 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
   @volatile private[this] var isConnected = false
 
   // Only accessible in `connect()`
-  private[this] var connectionRef: CancelableFuture[Ack] = null
+  private[this] var connectionRef: CancelableFuture[Ack] = _
 
   /** Connects the underling observer to the upstream publisher.
     *
@@ -106,13 +106,13 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
     self.synchronized {
       if (!isConnected && !isConnectionStarted) {
         isConnectionStarted = true
-        val bufferWasDrained = Promise[Ack]()
+        val bufferWasDrained = FastFuture.promise[Ack]
 
         val cancelable = Observable.fromIterable(queue).unsafeSubscribeFn(new Subscriber[A] {
           implicit val scheduler = underlying.scheduler
           private[this] var ack: Future[Ack] = Continue
 
-          bufferWasDrained.future.onComplete {
+          bufferWasDrained.onComplete {
             case Success(Continue) =>
               connectedPromise.success(Continue)
               isConnected = true
@@ -153,13 +153,13 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
 
           def onComplete(): Unit = {
             if (!scheduledDone) {
-              ack.syncOnContinue(bufferWasDrained.trySuccess(Continue))
+              ack.syncOnContinue(bufferWasDrained.tryUnsafeComplete(Continue.AsSuccess))
             }
             else if (scheduledError ne null) {
-              if (bufferWasDrained.trySuccess(Stop))
+              if (bufferWasDrained.tryUnsafeComplete(Stop.AsSuccess))
                 underlying.onError(scheduledError)
             }
-            else if (bufferWasDrained.trySuccess(Stop))
+            else if (bufferWasDrained.tryUnsafeComplete(Stop.AsSuccess))
               underlying.onComplete()
           }
 
@@ -170,7 +170,7 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
               scheduledDone = true
               scheduledError = ex
 
-              if (bufferWasDrained.trySuccess(Stop))
+              if (bufferWasDrained.tryUnsafeComplete(Stop.AsSuccess))
                 underlying.onError(ex)
               else
                 scheduler.reportFailure(ex)
@@ -178,7 +178,7 @@ final class ConnectableSubscriber[-A] private (underlying: Subscriber[A])
           }
         })
 
-        connectionRef = CancelableFuture(bufferWasDrained.future, cancelable)
+        connectionRef = CancelableFuture(bufferWasDrained, cancelable)
       }
 
       connectionRef

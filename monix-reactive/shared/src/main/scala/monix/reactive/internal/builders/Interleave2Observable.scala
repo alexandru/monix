@@ -17,12 +17,15 @@
 
 package monix.reactive.internal.builders
 
-import monix.execution.Ack.{Stop, Continue}
+import monix.execution.Ack.{Continue, Stop}
+import monix.execution.FastFuture.LightPromise
 import monix.execution.cancelables.CompositeCancelable
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
-import scala.concurrent.{Future, Promise}
+
+import scala.concurrent.Future
+import scala.util.Try
 
 private[reactive] final class Interleave2Observable[+A]
   (obsA1: Observable[A], obsA2: Observable[A]) extends Observable[A] { self =>
@@ -37,9 +40,9 @@ private[reactive] final class Interleave2Observable[+A]
     // MUST BE synchronized by `self`.
     // This essentially serves as a lock for obsA1 when `select` is not assigned to it
     // pauseA1 is initialized to be `Continue`, so that obsA1 is deterministically emitted before obsA2
-    var pauseA1 = Promise.successful(Continue : Ack)
+    var pauseA1 = LightPromise.fromTry(Continue.AsSuccess : Try[Ack])
     // This essentially serves as a lock for obsA2 when `select` is not assigned to it
-    var pauseA2 = Promise[Ack]()
+    var pauseA2 = FastFuture.promise[Ack]
 
     // MUST BE synchronized by `self`
     var completedCount = 0
@@ -52,8 +55,8 @@ private[reactive] final class Interleave2Observable[+A]
           isDone = true
           out.onError(ex)
           downstreamAck = Stop
-          pauseA1.tryCompleteWith(Stop)
-          pauseA2.tryCompleteWith(Stop)
+          pauseA1.tryUnsafeComplete(Stop.AsSuccess)
+          pauseA2.tryUnsafeComplete(Stop.AsSuccess)
         }
       }
 
@@ -81,14 +84,14 @@ private[reactive] final class Interleave2Observable[+A]
         @inline def sendSignal(a: A): Future[Ack] = self.synchronized {
           if (isDone) Stop else {
             downstreamAck = out.onNext(a)
-            pauseA1 = Promise[Ack]()
-            pauseA2.tryCompleteWith(downstreamAck)
+            pauseA1 = FastFuture.promise[Ack]
+            pauseA2.tryUnsafeCompleteWith(downstreamAck)
             downstreamAck
           }
         }
 
         // Pausing A1 until obsA2 allows us to send
-        lastAck1 = pauseA1.future.syncTryFlatten.syncFlatMap {
+        lastAck1 = pauseA1.syncTryFlatten.syncFlatMap {
           case Continue => sendSignal(elem)
           case Stop => Stop
         }
@@ -102,8 +105,8 @@ private[reactive] final class Interleave2Observable[+A]
       def onComplete(): Unit = self.synchronized {
         lastAck1.syncOnContinue {
           signalOnComplete(lastAck1)
-          pauseA2.trySuccess(Continue)
-          pauseA2 = Promise.successful(Continue)
+          pauseA2.tryUnsafeComplete(Continue.AsSuccess)
+          pauseA2 = LightPromise.fromTry(Continue.AsSuccess)
         }
       }
     })
@@ -115,14 +118,14 @@ private[reactive] final class Interleave2Observable[+A]
         @inline def sendSignal(a: A): Future[Ack] = self.synchronized {
           if (isDone) Stop else {
             downstreamAck = out.onNext(a)
-            pauseA2 = Promise[Ack]()
-            pauseA1.tryCompleteWith(downstreamAck)
+            pauseA2 = FastFuture.promise[Ack]
+            pauseA1.tryUnsafeCompleteWith(downstreamAck)
             downstreamAck
           }
         }
 
         // Pausing A2 until obsA1 allows us to send
-        lastAck2 = pauseA2.future.syncTryFlatten.syncFlatMap {
+        lastAck2 = pauseA2.syncTryFlatten.syncFlatMap {
           case Continue => sendSignal(elem)
           case Stop => Stop
         }
@@ -136,8 +139,8 @@ private[reactive] final class Interleave2Observable[+A]
       def onComplete(): Unit = self.synchronized {
         lastAck2.syncOnContinue {
           signalOnComplete(lastAck2)
-          pauseA1.trySuccess(Continue)
-          pauseA1 = Promise.successful(Continue)
+          pauseA1.tryUnsafeComplete(Continue.AsSuccess)
+          pauseA1 = LightPromise.fromTry(Continue.AsSuccess)
         }
       }
     })

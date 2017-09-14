@@ -18,7 +18,7 @@
 package monix.execution
 
 import java.util.concurrent.TimeoutException
-import monix.execution.misc.NonFatal
+import monix.execution.schedulers.TrampolineExecutionContext.immediate
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success, Try}
@@ -83,75 +83,50 @@ object FutureUtils {
   /** Utility that lifts a `Future[A]` into a `Future[Try[A]]`, exposing
     * error explicitly.
     */
-  def materialize[A](source: Future[A])(implicit ec: ExecutionContext): Future[Try[A]] = {
+  def materialize[A](source: Future[A]): Future[Try[A]] = {
     if (source.isCompleted) {
       FastFuture.successful(source.value.get)
     }
     else {
+      implicit val ec = immediate
       val promise = FastFuture.promise[Try[A]]
       source.onComplete(result => promise.complete(Success(result)))
       promise
     }
   }
 
-  /** Given a mapping functions that operates on successful results as well as
-    * errors, transforms the source by applying it.
+  /** Given a mapping functions that operates on successful results
+    * as well as errors, transforms the source by applying it.
     *
-    * Similar to `Future.transform` from Scala 2.12.
+    * For Scala 2.11 provides a custom implementation, while deferring
+    * to the `source`'s `transform` implementation for Scala 2.12.
     */
   def transform[A,B](source: Future[A], f: Try[A] => Try[B])(implicit ec: ExecutionContext): Future[B] =
-    source match {
-      case ref: CancelableFuture[_] =>
-        // CancelableFuture already implements transform
-        ref.asInstanceOf[CancelableFuture[A]].transform(f)(ec)
-
-      case _ =>
-        val promise = FastFuture.promise[B]
-        source.onComplete { result =>
-          val b = try f(result) catch { case NonFatal(t) => Failure(t) }
-          promise.complete(b)
-        }
-        promise
-    }
+    source.transform(f)(ec)
 
   /** Given a mapping functions that operates on successful results
     * as well as errors, transforms the source by applying it.
     *
-    * Similar to `Future.transformWith` from Scala 2.12.
+    * For Scala 2.11 provides a custom implementation, while deferring
+    * to the `source`'s `transformWith` implementation for Scala 2.12.
     */
   def transformWith[A,B](source: Future[A], f: Try[A] => Future[B])(implicit ec: ExecutionContext): Future[B] =
-    source match {
-      case ref: CancelableFuture[_] =>
-        // CancelableFuture already implements transformWith
-        ref.asInstanceOf[CancelableFuture[A]].transformWith(f)(ec)
-
-      case _ =>
-        val promise = FastFuture.promise[B]
-        source.onComplete { result =>
-          val fb = try f(result) catch { case NonFatal(t) => Future.failed(t) }
-          if (fb eq source)
-            promise.complete(result.asInstanceOf[Try[B]])
-          else fb.value match {
-            case Some(value) => promise.complete(value)
-            case None => promise.completeWith(fb)
-          }
-        }
-        promise
-    }
+    source.transformWith(f)(ec)
 
   /** Utility that transforms a `Future[Try[A]]` into a `Future[A]`,
     * hiding errors, being the opposite of [[materialize]].
     */
-  def dematerialize[A](source: Future[Try[A]])(implicit ec: ExecutionContext): Future[A] = {
+  def dematerialize[A](source: Future[Try[A]]): Future[A] = {
     if (source.isCompleted)
       source.value.get match {
-        case Failure(error) => Future.failed(error)
+        case Failure(error) => FastFuture.failed(error)
         case Success(value) => value match {
-          case Success(success) => Future.successful(success)
-          case Failure(error) => Future.failed(error)
+          case Success(success) => FastFuture.successful(success)
+          case Failure(error) => FastFuture.failed(error)
         }
       }
     else {
+      implicit val ec = immediate
       val promise = FastFuture.promise[A]
       source.onComplete {
         case Failure(error) => promise.complete(Failure(error))

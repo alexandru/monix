@@ -20,7 +20,7 @@ package monix.execution
 import minitest.TestSuite
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.schedulers.TestScheduler
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 
 object AckSuite extends TestSuite[TestScheduler] {
@@ -617,77 +617,77 @@ object AckSuite extends TestSuite[TestScheduler] {
 
   test("Continue.syncOnContinueFollow") { implicit s =>
     val ack: Future[Ack] = Continue
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnContinueFollow(p, 1)
     // should be immediate
-    assertEquals(p.future.value, Some(Success(1)))
+    assertEquals(p.value, Some(Success(1)))
   }
 
   test("Stop.syncOnContinueFollow") { implicit s =>
     val ack: Future[Ack] = Stop
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnContinueFollow(p, 1)
     s.tick()
-    assertEquals(p.future.value, None)
+    assertEquals(p.value, None)
   }
 
   test("Future(Continue).syncOnContinueFollow") { implicit s =>
     val ack: Future[Ack] = Future(Continue)
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnContinueFollow(p, 1)
-    assertEquals(p.future.value, None)
+    assertEquals(p.value, None)
 
     // should be async
     s.tick()
-    assertEquals(p.future.value, Some(Success(1)))
+    assertEquals(p.value, Some(Success(1)))
   }
 
   test("Future(Stop).syncOnContinueFollow") { implicit s =>
     val ack: Future[Ack] = Future(Stop)
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnContinueFollow(p, 1)
     s.tick()
-    assertEquals(p.future.value, None)
+    assertEquals(p.value, None)
   }
 
   test("Continue.syncOnStopFollow") { implicit s =>
     val ack: Future[Ack] = Continue
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnStopFollow(p, 1)
     s.tick()
-    assertEquals(p.future.value, None)
+    assertEquals(p.value, None)
   }
 
   test("Stop.syncOnStopFollow") { implicit s =>
     val ack: Future[Ack] = Stop
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnStopFollow(p, 1)
     // should be immediate
-    assertEquals(p.future.value, Some(Success(1)))
+    assertEquals(p.value, Some(Success(1)))
   }
 
   test("Future(Continue).syncOnStopFollow") { implicit s =>
     val ack: Future[Ack] = Future(Continue)
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnStopFollow(p, 1)
     s.tick()
-    assertEquals(p.future.value, None)
+    assertEquals(p.value, None)
   }
 
   test("Future(Stop).syncOnStopFollow") { implicit s =>
     val ack: Future[Ack] = Future(Stop)
-    val p = Promise[Int]()
+    val p = FastFuture.promise[Int]
 
     ack.syncOnStopFollow(p, 1)
     s.tick()
-    assertEquals(p.future.value, Some(Success(1)))
+    assertEquals(p.value, Some(Success(1)))
   }
 
   test("syncTryFlatten works for synchronous failure") { implicit s =>

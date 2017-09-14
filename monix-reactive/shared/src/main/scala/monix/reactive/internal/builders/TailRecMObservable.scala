@@ -22,10 +22,11 @@ import monix.execution.atomic.AtomicBoolean
 import monix.execution.cancelables.{SingleAssignmentCancelable, StackedCancelable}
 import monix.execution.misc.NonFatal
 import monix.execution.schedulers.TrampolineExecutionContext.immediate
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
-import scala.concurrent.{Future, Promise}
+
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 /** Implementation for `Observable.tailRecM`. */
@@ -59,7 +60,7 @@ private[monix] final class TailRecMObservable[A,B](seed: A, f: A => Observable[E
     * constant memory.
     */
   private def loop(seed: A, out: Subscriber[B], conn: StackedCancelable): Future[Future[Ack]] = {
-    val callback = Promise[Future[Ack]]()
+    val callback = FastFuture.promise[Future[Ack]]
 
     // Protects against user code
     var streamErrors = true
@@ -103,7 +104,7 @@ private[monix] final class TailRecMObservable[A,B](seed: A, f: A => Observable[E
             case Success(value) =>
               if (value == Stop) tryFinish(value)
             case Failure(ex) =>
-              if (!tryFinish(Future.failed(ex)))
+              if (!tryFinish(FastFuture.failed(ex)))
                 s.reportFailure(ex)
           }
           lastAck
@@ -138,7 +139,7 @@ private[monix] final class TailRecMObservable[A,B](seed: A, f: A => Observable[E
           // an error, hence we wait. Note that `onError` is still
           // tail-recursive, just as `onComplete`
           val f = lastAck.flatMap {
-            case Continue => Future.failed(ex)
+            case Continue => FastFuture.failed(ex)
             case Stop =>
               s.reportFailure(ex)
               Stop
@@ -154,10 +155,10 @@ private[monix] final class TailRecMObservable[A,B](seed: A, f: A => Observable[E
       c := next.unsafeSubscribeFn(loopSubscriber)
     } catch {
       case NonFatal(ex) =>
-        if (streamErrors) callback.success(Future.failed(ex))
+        if (streamErrors) callback.success(FastFuture.failed(ex))
         else out.scheduler.reportFailure(ex)
     }
 
-    callback.future
+    callback
   }
 }

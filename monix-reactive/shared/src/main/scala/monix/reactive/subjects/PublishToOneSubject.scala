@@ -21,11 +21,11 @@ import monix.execution.Ack.{Continue, Stop}
 import monix.execution.atomic.Atomic
 import monix.execution.cancelables.BooleanCancelable
 import monix.execution.exceptions.APIContractViolationException
-import monix.execution.{Ack, Cancelable, Scheduler}
+import monix.execution.{Ack, Cancelable, FastFuture, Scheduler}
 import monix.reactive.observers.Subscriber
 
 import scala.annotation.tailrec
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 /** `PublishToOneSubject` is a [[monix.reactive.subjects.PublishSubject]]
   * that can be subscribed at most once.
@@ -41,7 +41,7 @@ import scala.concurrent.{Future, Promise}
 final class PublishToOneSubject[A] private () extends Subject[A,A] with BooleanCancelable {
   import PublishToOneSubject.{canceledState, pendingCompleteState}
 
-  private[this] val subscriptionP = Promise[Ack]()
+  private[this] val subscriptionP = FastFuture.promise[Ack]
   private[this] var errorThrown: Throwable = _
   private[this] val ref = Atomic(null : Subscriber[A])
 
@@ -49,7 +49,7 @@ final class PublishToOneSubject[A] private () extends Subject[A,A] with BooleanC
     * with a `Continue`, or with a `Stop` if the subscription
     * happened but the subject was already completed.
     */
-  val subscription = subscriptionP.future
+  def subscription: Future[Ack] = subscriptionP
 
   def size: Int =
     ref.get match {
@@ -63,7 +63,7 @@ final class PublishToOneSubject[A] private () extends Subject[A,A] with BooleanC
         if (!ref.compareAndSet(null, subscriber))
           unsafeSubscribeFn(subscriber) // retry
         else {
-          subscriptionP.success(Continue)
+          subscriptionP.complete(Continue.AsSuccess)
           this
         }
 
@@ -72,11 +72,11 @@ final class PublishToOneSubject[A] private () extends Subject[A,A] with BooleanC
           unsafeSubscribeFn(subscriber)
         else if (errorThrown != null) {
           subscriber.onError(errorThrown)
-          subscriptionP.success(Stop)
+          subscriptionP.complete(Stop.AsSuccess)
           Cancelable.empty
         } else {
           subscriber.onComplete()
-          subscriptionP.success(Stop)
+          subscriptionP.complete(Stop.AsSuccess)
           Cancelable.empty
         }
 

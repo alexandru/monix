@@ -17,14 +17,15 @@
 
 package monix.reactive.observers.buffers
 
-import monix.execution.Ack
+import monix.execution.{Ack, FastFuture}
 import monix.execution.Ack.{Continue, Stop}
+import monix.execution.FastFuture.LightPromise
 import monix.execution.internal.collection.ArrayQueue
 import monix.execution.internal.math.nextPowerOf2
 import monix.execution.misc.NonFatal
 import monix.reactive.observers.{BufferedSubscriber, Subscriber}
 
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 /** Shared internals between [[BackPressuredBufferedSubscriber]] and
@@ -42,9 +43,9 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
 
   private[this] var upstreamIsComplete = false
   private[this] var downstreamIsComplete = false
-  private[this] var errorThrown: Throwable = null
+  private[this] var errorThrown: Throwable = _
   private[this] var isLoopActive = false
-  private[this] var backPressured: Promise[Ack] = null
+  private[this] var backPressured: LightPromise[Ack] = _
   private[this] var lastIterationAck: Future[Ack] = Continue
   protected val queue = ArrayQueue.unbounded[A]
 
@@ -62,15 +63,15 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
           pushToConsumer()
           Continue
         } else {
-          backPressured = Promise[Ack]()
+          backPressured = FastFuture.promise
           queue.offer(elem)
           pushToConsumer()
-          backPressured.future
+          backPressured
         }
       case promise =>
         queue.offer(elem)
         pushToConsumer()
-        promise.future
+        promise
     }
   }
 
@@ -190,7 +191,7 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
                 stopStreaming()
                 return
 
-              case async =>
+              case _ =>
                 goAsync(next, ack)
                 return
             }

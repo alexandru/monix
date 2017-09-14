@@ -17,13 +17,13 @@
 
 package monix.execution.misc
 
-import monix.execution.Listener
+import monix.execution.{FastFuture, Listener}
 import monix.execution.atomic.PaddingStrategy.NoPadding
 import monix.execution.atomic.{AtomicAny, PaddingStrategy}
 
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 /** Asynchronous mutable location, that is either empty or contains
   * a value of type `A`.
@@ -71,9 +71,9 @@ final class AsyncVar[A] private (_ref: AtomicAny[AsyncVar.State[A]]) {
     *         value being next in line to be consumed
     */
   def put(a: A): Future[Unit] = {
-    val p = Promise[Unit]()
-    if (unsafePut(a, Listener.fromPromise(p))) Future.successful(())
-    else p.future
+    val promise = FastFuture.promise[Unit]
+    if (unsafePut(a, Listener.fromTryCallback(promise.complete))) FastFuture.unit
+    else promise
   }
 
   /** Fills the `AsyncVar` if it is empty, or blocks (asynchronously)
@@ -122,10 +122,10 @@ final class AsyncVar[A] private (_ref: AtomicAny[AsyncVar.State[A]]) {
     *     with plain callbacks.
     */
   def take: Future[A] = {
-    val p = Promise[A]()
-    unsafeTake(Listener.fromPromise(p)) match {
-      case null => p.future
-      case a => Future.successful(a)
+    val promise = FastFuture.promise[A]
+    unsafeTake(Listener.fromTryCallback(promise.complete)) match {
+      case null => promise
+      case a => FastFuture.successful(a)
     }
   }
 
@@ -195,10 +195,10 @@ final class AsyncVar[A] private (_ref: AtomicAny[AsyncVar.State[A]]) {
     *         result is available immediately
     */
   def read: Future[A] = {
-    val p = Promise[A]()
-    unsafeRead(Listener.fromPromise(p)) match {
-      case null => p.future
-      case a => Future.successful(a)
+    val promise = FastFuture.promise[A]
+    unsafeRead(Listener.fromTryCallback(promise.complete)) match {
+      case null => promise
+      case a => FastFuture.successful(a)
     }
   }
 

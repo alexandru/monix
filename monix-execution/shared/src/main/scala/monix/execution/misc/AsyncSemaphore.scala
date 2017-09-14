@@ -17,13 +17,15 @@
 
 package monix.execution.misc
 
-import monix.execution.{Cancelable, CancelableFuture}
+import monix.execution.FastFuture.LightPromise
+import monix.execution.{Cancelable, CancelableFuture, FastFuture}
 import monix.execution.atomic.AtomicAny
 import monix.execution.atomic.PaddingStrategy.LeftRight128
 
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
-import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Success, Try}
 
 /** The `AsyncSemaphore` is an asynchronous semaphore implementation that
   * limits the parallelism on `Future` execution.
@@ -44,7 +46,7 @@ import scala.concurrent.{ExecutionContext, Future, Promise}
 final class AsyncSemaphore private (maxParallelism: Int)
   extends Serializable {
 
-  import AsyncSemaphore.State
+  import AsyncSemaphore.{State, tryUnit}
   require(maxParallelism > 0, "parallelism > 0")
 
   private[this] val stateRef =
@@ -89,12 +91,12 @@ final class AsyncSemaphore private (maxParallelism: Int)
             AsyncSemaphore.availablePermit
         }
         else {
-          val p = Promise[Unit]()
-          val update = current.addPromise(p)
+          val promise = FastFuture.promise[Unit]
+          val update = current.addPromise(promise)
           if (!stateRef.compareAndSet(current, update))
             acquire() // retry
           else
-            CancelableFuture(p.future, new CancelAcquisition(p))
+            CancelableFuture(promise, new CancelAcquisition(promise))
         }
     }
   }
@@ -120,8 +122,8 @@ final class AsyncSemaphore private (maxParallelism: Int)
         if (!stateRef.compareAndSet(current, update))
           release() // retry
         else {
-          if (p != null) p.trySuccess(())
-          if (newActiveCount == 0 && awaitAll != null) awaitAll.trySuccess(())
+          if (p != null) p.tryUnsafeComplete(tryUnit)
+          if (newActiveCount == 0 && awaitAll != null) awaitAll.tryUnsafeComplete(tryUnit)
         }
     }
   }
@@ -139,22 +141,22 @@ final class AsyncSemaphore private (maxParallelism: Int)
         if (activeCount <= 0)
           CancelableFuture.successful(())
         else if (awaitAll != null)
-          awaitAll.future
+          awaitAll
         else {
-          val p = Promise[Unit]()
-          val update = current.copy(awaitAllReleased = p)
+          val promise = FastFuture.promise[Unit]
+          val update = current.copy(awaitAllReleased = promise)
           if (!stateRef.compareAndSet(current, update))
             awaitAllReleased()
           else
-            p.future
+            promise
         }
     }
 
-  private final class CancelAcquisition(permit: Promise[Unit])
+  private final class CancelAcquisition(permit: LightPromise[Unit])
     extends Cancelable {
 
     @tailrec def cancel(): Unit =
-      if (!permit.future.isCompleted) {
+      if (!permit.isCompleted) {
         val current: State = stateRef.get
         val update = current.removePromise(permit)
         if (!stateRef.compareAndSet(current, update))
@@ -178,20 +180,23 @@ object AsyncSemaphore {
   /** Internal. Reusable initial state. */
   private final val initialState: State =
     State(0, Queue.empty, null)
+  /** Internal. Reusable reference. */
+  private final val tryUnit: Try[Unit] =
+    Success(())
 
   /** Internal. For keeping the state of our
     * [[AsyncSemaphore]] in an atomic reference.
     */
   private final case class State(
     activeCount: Int,
-    promises: Queue[Promise[Unit]],
-    awaitAllReleased: Promise[Unit]) {
+    promises: Queue[LightPromise[Unit]],
+    awaitAllReleased: LightPromise[Unit]) {
 
     def activateOne(): State =
       copy(activeCount = activeCount + 1)
-    def addPromise(p: Promise[Unit]): State =
+    def addPromise(p: LightPromise[Unit]): State =
       copy(promises = promises.enqueue(p))
-    def removePromise(p: Promise[Unit]): State =
+    def removePromise(p: LightPromise[Unit]): State =
       copy(promises = promises.filter(_ != p))
   }
 }

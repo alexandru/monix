@@ -19,10 +19,11 @@ package monix.reactive.internal.consumers
 
 import monix.eval.Callback
 import monix.execution.Ack.{Continue, Stop}
-import monix.execution.{Ack, Cancelable, Scheduler}
+import monix.execution.FastFuture.LightPromise
 import monix.execution.atomic.{Atomic, PaddingStrategy}
 import monix.execution.cancelables.{AssignableCancelable, SingleAssignmentCancelable}
 import monix.execution.misc.NonFatal
+import monix.execution.{Ack, Cancelable, FastFuture, Scheduler}
 import monix.reactive.Consumer
 import monix.reactive.internal.consumers.LoadBalanceConsumer.IndexedSubscriber
 import monix.reactive.observers.Subscriber
@@ -30,7 +31,7 @@ import monix.reactive.observers.Subscriber
 import scala.annotation.tailrec
 import scala.collection.immutable.{BitSet, Queue}
 import scala.collection.mutable.ListBuffer
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 
@@ -245,12 +246,12 @@ final class LoadBalanceConsumer[-In, R]
           // If we no longer have active subscribers to
           // push events into, then the loop is finished
           if (activeCount <= 0)
-            Future.successful(())
+            FastFuture.successful(())
           else subscribersQueue.poll().flatMap {
             // By protocol, if a null happens, then there are
             // no more active subscribers available
             case null =>
-              Future.successful(())
+              FastFuture.successful(())
             case subscriber =>
               try {
                 if (ex == null) subscriber.out.onComplete()
@@ -260,7 +261,7 @@ final class LoadBalanceConsumer[-In, R]
               }
 
               if (activeCount > 0) loop(activeCount-1)
-              else Future.successful(())
+              else FastFuture.successful(())
           }
         }
 
@@ -330,14 +331,14 @@ private[reactive] object LoadBalanceConsumer {
       stateRef.get match {
         case current @ Available(queue, canceledIDs, ac) =>
           if (ac <= 0)
-            Future.successful(null)
+            FastFuture.successful(null)
           else if (queue.isEmpty) {
-            val p = Promise[IndexedSubscriber[In]]()
-            val update = Waiting(p, canceledIDs, ac)
+            val promise = FastFuture.promise[IndexedSubscriber[In]]
+            val update = Waiting(promise, canceledIDs, ac)
             if (!stateRef.compareAndSet(current, update))
               poll()
             else
-              p.future
+              promise
           }
           else {
             val (ref, newQueue) = queue.dequeue
@@ -345,10 +346,10 @@ private[reactive] object LoadBalanceConsumer {
             if (!stateRef.compareAndSet(current, update))
               poll()
             else
-              Future.successful(ref)
+              FastFuture.successful(ref)
           }
         case Waiting(_,_,_) =>
-          Future.failed(new IllegalStateException("waiting in poll()"))
+          FastFuture.failed(new IllegalStateException("waiting in poll()"))
       }
 
     @tailrec
@@ -414,7 +415,7 @@ private[reactive] object LoadBalanceConsumer {
     extends State[In]
 
   private[reactive] final case class Waiting[In](
-    promise: Promise[IndexedSubscriber[In]],
+    promise: LightPromise[IndexedSubscriber[In]],
     canceledIDs: BitSet,
     activeCount: Int)
     extends State[In]

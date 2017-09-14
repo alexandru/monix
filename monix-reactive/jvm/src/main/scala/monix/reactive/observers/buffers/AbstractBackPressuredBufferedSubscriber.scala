@@ -17,8 +17,9 @@
 
 package monix.reactive.observers.buffers
 
-import monix.execution.Ack
+import monix.execution.{Ack, FastFuture}
 import monix.execution.Ack.{Continue, Stop}
+import monix.execution.FastFuture.LightPromise
 import monix.execution.atomic.Atomic
 import monix.execution.atomic.PaddingStrategy.LeftRight256
 import monix.execution.internal.math
@@ -26,7 +27,7 @@ import monix.execution.misc.NonFatal
 import monix.reactive.observers.{BufferedSubscriber, Subscriber}
 
 import scala.annotation.tailrec
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 /** Shared internals between [[BackPressuredBufferedSubscriber]] and
@@ -48,7 +49,7 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
   private[this] val itemsToPush =
     Atomic.withPadding(0, LeftRight256)
   private[this] val backPressured =
-    Atomic.withPadding(null : Promise[Ack], LeftRight256)
+    Atomic.withPadding(null : LightPromise[Ack], LeftRight256)
 
   @tailrec
   private final def pushOnNext(elem: A, lastToPush: Option[Int]): Future[Ack] = {
@@ -72,20 +73,20 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
             Continue
           }
           else {
-            val promise = Promise[Ack]()
+            val promise = FastFuture.promise[Ack]
 
             if (!backPressured.compareAndSet(null, promise))
               pushOnNext(elem, Some(toPush))
             else {
               queue.offer(elem)
               pushToConsumer(toPush)
-              promise.future
+              promise
             }
           }
         case promise =>
           queue.offer(elem)
           pushToConsumer(toPush)
-          promise.future
+          promise
       }
     }
   }

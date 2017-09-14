@@ -17,36 +17,32 @@
 
 package monix.execution
 
-import monix.execution.misc.NonFatal
+import monix.execution.FastFuture.LightPromise
+
 import scala.concurrent.duration.Duration
-import scala.concurrent.{CanAwait, ExecutionContext, Future, Promise}
+import scala.concurrent.{CanAwait, ExecutionContext, Future}
 import scala.language.experimental.macros
 import scala.util.{Failure, Success, Try}
 
 /** Represents an acknowledgement of processing that a consumer
   * sends back upstream. Useful to implement back-pressure.
   */
-sealed abstract class Ack extends Future[Ack] with Serializable {
-  val AsSuccess: Success[Ack]
+sealed abstract class Ack extends FastFuture[Ack] with Serializable {
+  protected def ff: FastFuture[Ack]
+  def AsSuccess: Success[Ack]
 
-  // For Scala 2.12 compatibility
-  final def transform[S](f: (Try[Ack]) => Try[S])(implicit executor: ExecutionContext): Future[S] = {
-    val p = Promise[S]()
-    onComplete(r => p.complete(try f(r) catch { case NonFatal(t) => Failure(t) }))
-    p.future
-  }
+  final val isCompleted: Boolean = true
 
-  // For Scala 2.12 compatibility
-  final def transformWith[S](f: (Try[Ack]) => Future[S])(implicit executor: ExecutionContext): Future[S] = {
-    val p = Promise[S]()
-    onComplete(r => p.completeWith(try f(r) catch { case NonFatal(t) => Future.failed(t) }))
-    p.future
-  }
+  override def onComplete[U](f: (Try[Ack]) => U)
+    (implicit ec: ExecutionContext): Unit =
+    ff.onComplete(f)
 
-  final def onComplete[U](func: Try[Ack] => U)(implicit executor: ExecutionContext): Unit =
-    executor.execute(new Runnable {
-      def run(): Unit = func(AsSuccess)
-    })
+  override def onCompleteLight[U](f: (Try[Ack]) => U)
+    (implicit ec: ExecutionContext): Unit =
+    ff.onCompleteLight(f)
+
+  override final def ready(atMost: Duration)(implicit permit: CanAwait) = this
+  override final def result(atMost: Duration)(implicit permit: CanAwait) = AsSuccess.value
 }
 
 object Ack {
@@ -56,10 +52,7 @@ object Ack {
   case object Continue extends Ack { self =>
     final val AsSuccess = Success(Continue)
     final val value = Some(AsSuccess)
-    final val isCompleted = true
-
-    final def ready(atMost: Duration)(implicit permit: CanAwait) = self
-    final def result(atMost: Duration)(implicit permit: CanAwait) = Continue
+    protected final val ff = FastFuture.fromTry(AsSuccess)
   }
 
   /** Acknowledgement of processing that signals to upstream that the
@@ -68,10 +61,7 @@ object Ack {
   case object Stop extends Ack { self =>
     final val AsSuccess = Success(Stop)
     final val value = Some(AsSuccess)
-    final val isCompleted = true
-
-    final def ready(atMost: Duration)(implicit permit: CanAwait) = self
-    final def result(atMost: Duration)(implicit permit: CanAwait) = Stop
+    protected final val ff = FastFuture.fromTry(AsSuccess)
   }
 
   /** Helpers for dealing with synchronous `Future[Ack]` results,
@@ -135,28 +125,27 @@ object Ack {
     /** If the source completes with a `Stop`, then complete the given
       * promise with a value.
       */
-    def syncOnContinueFollow[A](p: Promise[A], value: A)(implicit s: Scheduler): Self = {
+    def syncOnContinueFollow[A](p: LightPromise[A], value: A)(implicit s: Scheduler): Self = {
       if (source eq Continue)
-        p.trySuccess(value)
+        p.tryUnsafeComplete(Success(value))
       else if (source ne Stop)
         source.onComplete { r =>
           if (r.isSuccess && (r.get eq Continue))
-            p.trySuccess(value)
+            p.tryUnsafeComplete(Success(value))
         }
-
       source
     }
 
     /** If the source completes with a `Stop`, then complete the given
       * promise with a value.
       */
-    def syncOnStopFollow[A](p: Promise[A], value: A)(implicit s: Scheduler): Self = {
+    def syncOnStopFollow[A](p: LightPromise[A], value: A)(implicit s: Scheduler): Self = {
       if (source eq Stop)
-        p.trySuccess(value)
+        p.tryUnsafeComplete(Success(value))
       else if (source ne Continue)
         source.onComplete { r =>
           if (r.isSuccess && (r.get eq Stop))
-            p.trySuccess(value)
+            p.tryUnsafeComplete(Success(value))
         }
       source
     }

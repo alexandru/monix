@@ -18,10 +18,9 @@
 package monix.eval.internal
 
 import monix.eval.{Callback, Task}
-import monix.execution.CancelableFuture
+import monix.execution.{CancelableFuture, FastFuture}
 import monix.execution.atomic.Atomic
 import monix.execution.cancelables._
-import scala.concurrent.Promise
 
 private[eval] object TaskChooseFirstOf {
   /**
@@ -32,8 +31,8 @@ private[eval] object TaskChooseFirstOf {
       implicit val s = context.scheduler
       val conn = context.connection
 
-      val pa = Promise[A]()
-      val pb = Promise[B]()
+      val pa = FastFuture.promise[A]
+      val pb = FastFuture.promise[B]
 
       val isActive = Atomic(true)
       val connA = StackedCancelable()
@@ -47,7 +46,7 @@ private[eval] object TaskChooseFirstOf {
       Task.unsafeStartAsync(fa, contextA, new Callback[A] {
         def onSuccess(valueA: A): Unit =
           if (isActive.getAndSet(false)) {
-            val futureB = CancelableFuture(pb.future, connB)
+            val futureB = CancelableFuture(pb, connB)
             conn.pop()
             cb.asyncOnSuccess(Left((valueA, futureB)))
           } else {
@@ -68,7 +67,7 @@ private[eval] object TaskChooseFirstOf {
       Task.unsafeStartAsync(fb, contextB, new Callback[B] {
         def onSuccess(valueB: B): Unit =
           if (isActive.getAndSet(false)) {
-            val futureA = CancelableFuture(pa.future, connA)
+            val futureA = CancelableFuture(pa, connA)
             conn.pop()
             cb.asyncOnSuccess(Right((futureA, valueB)))
           } else {

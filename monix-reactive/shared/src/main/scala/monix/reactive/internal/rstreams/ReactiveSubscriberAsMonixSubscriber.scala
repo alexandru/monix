@@ -17,15 +17,17 @@
 
 package monix.reactive.internal.rstreams
 
-import monix.execution.{Cancelable, Ack, Scheduler}
-import monix.reactive.observers.Subscriber
+import monix.execution.Ack.{Continue, Stop}
+import monix.execution.FastFuture.LightPromise
 import monix.execution.atomic.Atomic
-import monix.execution.Ack.{Stop, Continue}
+import monix.execution.{Ack, Cancelable, FastFuture, Scheduler}
 import monix.reactive.internal.rstreams.ReactiveSubscriberAsMonixSubscriber.RequestsQueue
-import org.reactivestreams.{Subscriber => RSubscriber, Subscription}
+import monix.reactive.observers.Subscriber
+import org.reactivestreams.{Subscription, Subscriber => RSubscriber}
+
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 /** Wraps a `org.reactivestreams.Subscriber` instance that respects the
   * [[http://www.reactive-streams.org/ Reactive Streams]] contract
@@ -124,7 +126,7 @@ private[reactive] object ReactiveSubscriberAsMonixSubscriber {
     def await(): Future[Long] = {
       state.get match {
         case CancelledState =>
-          Future.successful(0)
+          FastFuture.successful(0)
 
         case oldState @ ActiveState(elements, promises) =>
           if (elements.nonEmpty) {
@@ -134,16 +136,16 @@ private[reactive] object ReactiveSubscriberAsMonixSubscriber {
             if (!state.compareAndSet(oldState, newState))
               await()
             else
-              Future.successful(e)
+              FastFuture.successful(e)
           }
           else {
-            val p = Promise[Long]()
-            val newState = ActiveState(elements, promises.enqueue(p))
+            val promise = FastFuture.promise[Long]
+            val newState = ActiveState(elements, promises.enqueue(promise))
 
             if (!state.compareAndSet(oldState, newState))
               await()
             else
-              p.future
+              promise
           }
       }
     }
@@ -196,7 +198,7 @@ private[reactive] object ReactiveSubscriberAsMonixSubscriber {
 
     sealed trait State
 
-    case class ActiveState(elements: Queue[Long], promises: Queue[Promise[Long]])
+    case class ActiveState(elements: Queue[Long], promises: Queue[LightPromise[Long]])
       extends State
 
     case object CancelledState

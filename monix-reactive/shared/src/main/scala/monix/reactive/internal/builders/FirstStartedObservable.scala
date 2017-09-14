@@ -18,13 +18,14 @@
 package monix.reactive.internal.builders
 
 import monix.execution.Ack.Stop
+import monix.execution.FastFuture.LightPromise
 import monix.execution.atomic.PaddingStrategy.NoPadding
 import monix.execution.atomic.{Atomic, AtomicInt}
 import monix.execution.cancelables.CompositeCancelable
-import monix.execution.{Ack, Cancelable, Scheduler}
+import monix.execution.{Ack, Cancelable, FastFuture, Scheduler}
 import monix.reactive.observers.Subscriber
 import monix.reactive.{Observable, Observer}
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 private[reactive] final class FirstStartedObservable[A](source: Observable[A]*)
   extends Observable[A] {
@@ -36,11 +37,11 @@ private[reactive] final class FirstStartedObservable[A](source: Observable[A]*)
 
     // Future that will get completed with the winning index,
     // meant to trigger the cancellation of all others
-    val p = Promise[Int]()
-    val cancelables = new Array[Cancelable](source.length)
+    val promise = FastFuture.promise[Int]
+    val cancellables = new Array[Cancelable](source.length)
 
     for (observable <- source) {
-      cancelables(idx) = createSubscription(observable, subscriber, finishLine, idx, p)
+      cancellables(idx) = createSubscription(observable, subscriber, finishLine, idx, promise)
       idx += 1
     }
 
@@ -50,11 +51,11 @@ private[reactive] final class FirstStartedObservable[A](source: Observable[A]*)
       Cancelable.empty
     } else {
       val composite =
-        CompositeCancelable.withPadding(cancelables.toSet, NoPadding)
+        CompositeCancelable.withPadding(cancellables.toSet, NoPadding)
 
       // When we have a winner, cancel the rest!
-      for (idx <- p.future) {
-        val c = cancelables(idx)
+      for (idx <- promise) {
+        val c = cancellables(idx)
         val other = composite.getAndSet(Set(c))
         Cancelable.cancelAll(other - c)
       }
@@ -65,7 +66,7 @@ private[reactive] final class FirstStartedObservable[A](source: Observable[A]*)
 
   // Helper function used for creating a subscription that uses `finishLine` as guard
   def createSubscription(observable: Observable[A], observer: Observer[A],
-    finishLine: AtomicInt, idx: Int, p: Promise[Int])
+    finishLine: AtomicInt, idx: Int, p: LightPromise[Int])
     (implicit s: Scheduler): Cancelable = {
 
     observable.unsafeSubscribeFn(new Observer[A] {

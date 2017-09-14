@@ -17,8 +17,9 @@
 
 package monix.reactive.internal.util
 
+import monix.execution.FastFuture
 import monix.execution.atomic.Atomic
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 /**
   * Represents a Promise that completes with `value` after
@@ -27,11 +28,11 @@ import scala.concurrent.{Future, Promise}
 private[monix] final class PromiseCounter[A] private (value: A, initial: Int) {
   require(initial > 0, "length must be strictly positive")
 
-  private[this] val promise = Promise[A]()
+  private[this] val promise = FastFuture.promise[A]
   private[this] val counter = Atomic(initial)
 
   def future: Future[A] =
-    promise.future
+    promise
 
   def acquire(): Unit =
     counter.increment()

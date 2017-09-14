@@ -55,7 +55,7 @@ private[reactive] final class RepeatEvalObservable[+A](eval: => A)
 
     val ack = try o.onNext(eval) catch {
       case NonFatal(ex) =>
-        Future.failed(ex)
+        FastFuture.failed(ex)
     }
 
     val nextIndex =
