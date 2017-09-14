@@ -19,11 +19,11 @@ package monix.reactive.internal.operators
 
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.cancelables.{CompositeCancelable, SingleAssignmentCancelable}
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
 import scala.collection.mutable.ListBuffer
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 private[reactive] final class BufferWithSelectorObservable[+A,S](
   source: Observable[A],
@@ -43,7 +43,7 @@ private[reactive] final class BufferWithSelectorObservable[+A,S](
         // MUST BE synchronized by `self`
         private[this] var buffer = ListBuffer.empty[A]
         // MUST BE synchronized by `self`
-        private[this] var promise = Promise[Ack]()
+        private[this] var promise = FastFuture.promise[Ack]
         // To be written in onComplete/onError, to be read from tick
         private[this] var upstreamIsDone = false
         // MUST BE synchronized by `self`.
@@ -54,7 +54,7 @@ private[reactive] final class BufferWithSelectorObservable[+A,S](
             if (downstreamIsDone) Stop else {
               buffer += elem
               if (maxSize > 0 && buffer.length >= maxSize)
-                promise.future
+                promise
               else
                 Continue
             }
@@ -100,8 +100,8 @@ private[reactive] final class BufferWithSelectorObservable[+A,S](
                 // a maxSize to worry about
                 if (maxSize > 0) {
                   val oldPromise = promise
-                  promise = Promise()
-                  oldPromise.success(Continue)
+                  promise = FastFuture.promise
+                  oldPromise.complete(Continue.AsSuccess)
                 }
                 // Actual signaling
                 val ack = downstream.onNext(signal)

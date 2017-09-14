@@ -20,7 +20,6 @@ package monix.eval
 import cats.functor.Contravariant
 import monix.execution.misc.NonFatal
 import monix.execution.{Listener, Scheduler, UncaughtExceptionReporter}
-
 import scala.concurrent.Promise
 import scala.util.{Failure, Success, Try}
 
@@ -92,6 +91,23 @@ object Callback {
     new Callback[A] {
       def onError(ex: Throwable): Unit = p.failure(ex)
       def onSuccess(value: A): Unit = p.success(value)
+    }
+
+  /** Returns a [[Callback]] instance that will complete the given
+    * `Try`-enabled callback.
+    *
+    * For example this works well with
+    * [[monix.execution.FastFuture.LightPromise LightPromise]]:
+    *
+    * {{{
+    *   val p = FastFuture.promise[Int]
+    *   Callback.fromTryCallback(p.complete)
+    * }}}
+    */
+  def fromTryCallback[A](f: Try[A] => Unit): Callback[A] =
+    new Callback[A] {
+      def onSuccess(value: A): Unit = f(Success(value))
+      def onError(e: Throwable): Unit = f(Failure(e))
     }
 
   /** Given a [[Callback]] wraps it into an implementation that

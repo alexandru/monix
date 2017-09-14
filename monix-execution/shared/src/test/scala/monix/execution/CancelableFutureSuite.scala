@@ -582,12 +582,6 @@ object CancelableFutureSuite extends TestSuite[TestScheduler] {
     assertEquals(fa.value, None)
   }
 
-  test("async reports failures in user code") { implicit s =>
-    val dummy = DummyException("dummy")
-    val fa = CancelableFuture.async[Int] { _ => throw dummy }
-    assertEquals(fa.value, Some(Failure(dummy)))
-  }
-
   test("async throws error if protocol is violated") { implicit s =>
     val fa = CancelableFuture.async[Int] { cb =>
       cb(Success(1))
@@ -595,7 +589,7 @@ object CancelableFutureSuite extends TestSuite[TestScheduler] {
       Cancelable.empty
     }
 
-    assertEquals(fa.value, Some(Success(1)))
+    assert(fa.value.isDefined && fa.value.get.isSuccess)
     assert(s.state.lastReportedError != null)
     assert(s.state.lastReportedError.isInstanceOf[IllegalStateException])
   }

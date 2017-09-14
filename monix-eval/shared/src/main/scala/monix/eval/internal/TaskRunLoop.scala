@@ -23,7 +23,7 @@ import monix.execution.atomic.AtomicAny
 import monix.execution.cancelables.StackedCancelable
 import monix.execution.internal.collection.ArrayStack
 import monix.execution.misc.NonFatal
-import monix.execution.{Cancelable, CancelableFuture, ExecutionModel, Scheduler}
+import monix.execution._
 
 import scala.annotation.tailrec
 import scala.concurrent.Promise
@@ -399,19 +399,17 @@ private[eval] object TaskRunLoop {
       nextFrame: FrameIndex,
       forceAsync: Boolean): CancelableFuture[Any] = {
 
-      val p = Promise[Any]()
-      val cb: Callback[Any] = new Callback[Any] {
-        def onSuccess(value: Any): Unit = p.trySuccess(value)
-        def onError(ex: Throwable): Unit = p.tryFailure(ex)
-      }
-
       val context = Context(scheduler)
+      // Using FastFuture because it's awesome :-)
+      val p = FastFuture.promise[Any](context.scheduler)
+      val cb: Callback[Any] = Callback.fromTryCallback(p.complete)
+
       if (forceAsync)
         restartAsync(source, context, cb, bindCurrent, bindRest)
       else
         startWithCallback(source, context, cb, bindCurrent, bindRest, nextFrame)
 
-      CancelableFuture(p.future, context.connection)
+      CancelableFuture(p, context.connection)
     }
 
     /* Loop that evaluates a Task until the first async boundary is hit,

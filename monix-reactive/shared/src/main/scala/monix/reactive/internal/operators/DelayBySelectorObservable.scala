@@ -20,11 +20,10 @@ package monix.reactive.internal.operators
 import monix.execution.Ack.{Continue, Stop}
 import monix.execution.cancelables.{CompositeCancelable, MultiAssignmentCancelable}
 import monix.execution.misc.NonFatal
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
-
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 
 private[reactive] final
 class DelayBySelectorObservable[A,S](source: Observable[A], selector: A => Observable[S])
@@ -40,7 +39,7 @@ class DelayBySelectorObservable[A,S](source: Observable[A], selector: A => Obser
       private[this] var completeTriggered = false
       private[this] var isDone = false
       private[this] var currentElem: A = _
-      private[this] var ack: Promise[Ack] = _
+      private[this] var ack: FastFuture.LightPromise[Ack] = _
 
       private[this] val trigger = new Subscriber.Sync[Any] {
         implicit val scheduler = out.scheduler
@@ -58,8 +57,8 @@ class DelayBySelectorObservable[A,S](source: Observable[A], selector: A => Obser
           }
 
           next match {
-            case Continue => ack.success(Continue)
-            case Stop => ack.success(Stop)
+            case Continue => ack.complete(Continue.AsSuccess)
+            case Stop => ack.complete(Stop.AsSuccess)
             case async => ack.completeWith(async)
           }
         }
@@ -67,14 +66,14 @@ class DelayBySelectorObservable[A,S](source: Observable[A], selector: A => Obser
 
       def onNext(elem: A): Future[Ack] = {
         currentElem = elem
-        ack = Promise()
+        ack = FastFuture.promise
 
         var streamErrors = true
         try {
           val obs = selector(elem).take(0)
           streamErrors = false
           task := obs.unsafeSubscribeFn(trigger)
-          ack.future
+          ack
         }
         catch {
           case NonFatal(ex) if streamErrors =>
@@ -94,7 +93,7 @@ class DelayBySelectorObservable[A,S](source: Observable[A], selector: A => Obser
 
       def onComplete(): Unit = {
         completeTriggered = true
-        ack.future.syncTryFlatten.syncOnContinue {
+        ack.syncTryFlatten.syncOnContinue {
           if (!isDone) {
             isDone = true
             out.onComplete()

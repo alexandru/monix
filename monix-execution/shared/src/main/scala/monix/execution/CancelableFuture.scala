@@ -163,27 +163,26 @@ object CancelableFuture {
   def async[A](register: (Try[A] => Unit) => Cancelable)
     (implicit ec: ExecutionContext): CancelableFuture[A] = {
 
-    val p = Promise[A]()
     val cRef = ChainedCancelable()
+    val promise = FastFuture.promise[A]
 
-    // Light async boundary to guard against stack overflows
+    // Light async boundary to avoid stack overflows
     ec.execute(new TrampolinedRunnable {
       def run(): Unit = {
         try {
-          register(p.complete) match {
+          register(promise.complete) match {
             case _: IsDummy => ()
             case cRef2: ChainedCancelable => cRef2.chainTo(cRef)
             case ref => cRef := ref
           }
         } catch {
           case NonFatal(e) =>
-            if (!p.tryComplete(Failure(e)))
-              ec.reportFailure(e)
+            ec.reportFailure(e)
         }
       }
     })
 
-    CancelableFuture(p.future, cRef)
+    CancelableFuture(promise, cRef)
   }
 
   /** A [[CancelableFuture]] instance that will never complete. */
@@ -256,13 +255,16 @@ object CancelableFuture {
         case Failure(ex) => new Pure(Success(ex))
       }
 
-    override def transform[S](f: (Try[A]) => Try[S])(implicit executor: ExecutionContext): CancelableFuture[S] = {
-      val p = Promise[S]()
-      executor.execute(new Runnable {
+    override def transform[S](f: (Try[A]) => Try[S])
+      (implicit ec: ExecutionContext): CancelableFuture[S] = {
+
+      val promise = FastFuture.promise[S]
+      ec.execute(new Runnable {
         def run(): Unit =
-          p.complete(try f(immediate) catch { case NonFatal(e) => Failure(e) })
+          promise.complete(try f(immediate) catch { case NonFatal(e) => Failure(e) })
       })
-      CancelableFuture(p.future, Cancelable.empty)
+
+      CancelableFuture(promise, Cancelable.empty)
     }
 
     override def transformWith[S](f: (Try[A]) => Future[S])
@@ -321,7 +323,7 @@ object CancelableFuture {
     val f2 = FutureUtils.transformWith(underlying, { result: Try[A] =>
       val nextRef =
         try f(result)
-        catch { case NonFatal(e) => Future.failed(e) }
+        catch { case NonFatal(e) => FastFuture.failed(e) }
 
       if (!nextRef.isCompleted) {
         // Checking to see if we are dealing with a "flatMap"
@@ -408,7 +410,7 @@ object CancelableFuture {
     override def adaptError[A](fa: CancelableFuture[A])(pf: PartialFunction[Throwable, Throwable]): CancelableFuture[A] =
       fa.transformWith {
         case Failure(e) if pf.isDefinedAt(e) =>
-          Future.failed(pf(e))
+          FastFuture.failed(pf(e))
         case _ =>
           fa
       }

@@ -18,15 +18,14 @@
 package monix.reactive.internal.operators
 
 import java.util.concurrent.TimeUnit
-
-import monix.execution.Ack.{Stop, Continue}
+import monix.execution.Ack.{Continue, Stop}
+import monix.execution.atomic.Atomic
 import monix.execution.cancelables.{CompositeCancelable, MultiAssignmentCancelable}
-import monix.execution.{Ack, Cancelable}
+import monix.execution.{Ack, Cancelable, FastFuture}
 import monix.reactive.Observable
 import monix.reactive.observers.Subscriber
-import monix.execution.atomic.Atomic
+import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
-import scala.concurrent.{Future, Promise}
 
 private[reactive] final
 class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
@@ -43,13 +42,13 @@ class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
       private[this] var completeTriggered = false
       private[this] val delayMs = delay.toMillis
       private[this] var currentElem: A = _
-      private[this] var ack: Promise[Ack] = _
+      private[this] var ack: FastFuture.LightPromise[Ack] = _
 
       def onNext(elem: A): Future[Ack] = {
         currentElem = elem
-        ack = Promise()
+        ack = FastFuture.promise
         task := scheduler.scheduleOnce(delayMs, TimeUnit.MILLISECONDS, self)
-        ack.future
+        ack
       }
 
       // Method `onComplete` is ordered to execute after run() by means of
@@ -58,7 +57,7 @@ class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
       // earlier if possible.
       def onComplete(): Unit = {
         completeTriggered = true
-        val lastAck = if (ack eq null) Continue else ack.future
+        val lastAck = if (ack eq null) Continue else ack
 
         lastAck.syncTryFlatten.syncOnContinue {
           if (!isDone.getAndSet(true)) out.onComplete()
@@ -72,7 +71,7 @@ class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
           if (!isDone.getAndSet(true)) {
             hasError = true
             try out.onError(ex) finally {
-              if (ack != null) ack.trySuccess(Stop)
+              if (ack != null) ack.tryComplete(Stop.AsSuccess)
               task.cancel()
             }
           }
@@ -88,8 +87,8 @@ class DelayByTimespanObservable[A](source: Observable[A], delay: FiniteDuration)
             out.onComplete()
 
           next match {
-            case Continue => ack.success(Continue)
-            case Stop => ack.success(Stop)
+            case Continue => ack.complete(Continue.AsSuccess)
+            case Stop => ack.complete(Stop.AsSuccess)
             case async => ack.completeWith(async)
           }
         }
