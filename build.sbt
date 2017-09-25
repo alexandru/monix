@@ -348,6 +348,7 @@ lazy val tailJVM = project.in(file("monix-tail/jvm"))
   .dependsOn(evalJVM % "compile->compile; test->test")
   .dependsOn(executionJVM)
   .settings(tailCommon)
+  .settings(libraryDependencies += "org.jctools" % "jctools-core" % jcToolsVersion)
 
 lazy val tailJS = project.in(file("monix-tail/js"))
   .enablePlugins(ScalaJSPlugin)
