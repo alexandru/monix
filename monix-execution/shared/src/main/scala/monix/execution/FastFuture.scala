@@ -39,7 +39,7 @@ import scala.util.{Failure, Success, Try}
   *    but is slightly less safe in case the protocol is violated
   *    (i.e. the completion callback is called multiple times), but
   *    that's a reasonable compromise
-  *  - the [[Atomic]] reference used is
+  *  - the [[monix.execution.Atomic Atomic]] reference used is
   *    [[PaddingStrategy cache line padded]] for better performance
   *    when multiple threads operate on it
   *  - the completion callbacks that are registered ''before'' the
@@ -114,7 +114,12 @@ abstract class FastFuture[+A] extends Future[A] with MonixFuture[A] {
     val promise = FastFuture.promise[S]
     onCompleteLight { result =>
       val r2 = try f(result) catch { case NonFatal(e) => FastFuture.failed(e) }
-      r2.onComplete(promise.complete)(immediate)
+      r2 match {
+        case lp: LightPromise[_] =>
+          lp.asInstanceOf[LightPromise[S]].linkRootOf(promise)
+        case _ =>
+          r2.onComplete(promise.complete)(immediate)
+      }
     }
     promise
   }
@@ -158,7 +163,12 @@ abstract class FastFuture[+A] extends Future[A] with MonixFuture[A] {
     onCompleteLight {
       case Success(a) =>
         val r2 = try f(a) catch { case NonFatal(e) => FastFuture.failed(e) }
-        r2.onComplete(promise.complete)(immediate)
+        r2 match {
+          case lp: LightPromise[_] =>
+            lp.asInstanceOf[LightPromise[S]].linkRootOf(promise)
+          case _ =>
+            r2.onComplete(promise.complete)(immediate)
+        }
       case fail @ Failure(_) =>
         promise.complete(fail.asInstanceOf[Failure[S]])
     }
@@ -468,6 +478,9 @@ object FastFuture {
   final class LightPromise[A] private (private[this] val state: AtomicAny[AnyRef], isEmpty: Boolean)
     extends FastFuture[A] {
 
+    /** Really simple, non-thread safe check to protect against multiple calls. */
+    private[this] var isCompleteFlag = false
+
     /** Default constructor.
       *
       * @param ps is the [[PaddingStrategy]] to apply to the internal
@@ -479,16 +492,10 @@ object FastFuture {
 
     // State:
     //  - null: initial state
-    //  - Function1[Try[A], Unit]: one listener registered
-    //  - List[Function1]: multiple listeners registered
+    //  - Listener: one listener registered
+    //  - List[Listener]: multiple listeners registered
+    //  - LightPromise[_]
     //  - Try[A]: completed value
-
-    private[this] var completeRef: (Try[A]) => Unit = {
-      if (isEmpty)
-        new OnComplete(state).asInstanceOf[Try[A] => Unit]
-      else
-        spentComplete
-    }
 
     /** Tries completing this [[FastFuture]] reference with the given
       * `value`, but fails silently in case the `FastFuture` was
@@ -524,13 +531,38 @@ object FastFuture {
       * above), ''all subsequent listeners'' still get completed,
       * the only unknown being what value they receive.
       */
-    def tryUnsafeComplete(value: Try[A]): Boolean = {
-      val ref = completeRef
-      if (ref ne spentComplete)
-        try { ref(value); true }
-        catch { case _: IllegalStateException => false }
-      else
-        false
+    def tryUnsafeComplete(result: Try[Any]): Boolean = {
+      if (isCompleteFlag) return false
+      isCompleteFlag = true
+
+      state.get match {
+        case lp: LightPromise[_] =>
+          lp.asInstanceOf[LightPromise[Any]]
+            .compressedRoot()
+            .tryUnsafeComplete(result)
+
+        case _ => // Everything else
+          (state.getAndSet(result): AnyRef) match {
+            case null => true
+            case f: Listener =>
+              f.execute(result)
+              true
+            case list: List[_] =>
+              var cursor = list.asInstanceOf[List[Listener]]
+              while (cursor ne Nil) {
+                val f = cursor.head
+                cursor = cursor.tail
+                f.execute(result)
+              }
+              true
+            case lp: LightPromise[_] =>
+              lp.asInstanceOf[LightPromise[Any]]
+                .compressedRoot()
+                .tryUnsafeComplete(result)
+            case _ =>
+              false
+          }
+      }
     }
 
     /** Completes this `FastFuture` reference with the given value.
@@ -554,10 +586,11 @@ object FastFuture {
       *
       * @throws `IllegalStateException` in case it's called a second time
       */
-    def complete: (Try[A] => Unit) = {
-      val ref = completeRef
-      if (ref ne spentComplete) completeRef = spentComplete
-      ref
+    def complete(result: Try[A]): Unit = {
+      if (!tryUnsafeComplete(result))
+        throw new IllegalStateException(
+          "LightPromise protocol violation, complete() " +
+          "was called multiple times")
     }
 
     /** Completes this `FastFuture` with a successful `value`.
@@ -600,13 +633,142 @@ object FastFuture {
     override def value: Option[Try[A]] =
       state.get match {
         case ref: Try[_] => Some(ref.asInstanceOf[Try[A]])
+        case ref: LightPromise[_] => ref.compressedRoot().value.asInstanceOf[Option[Try[A]]]
         case _ => None
       }
 
     override def isCompleted: Boolean =
-      state.get match {
+      isCompleteFlag || (state.get match {
         case _: Try[_] => true
+        case ref: LightPromise[_] => ref.isCompleted
         case _ => false
+      })
+
+    /** Link this promise to the root of another promise using `link()`.
+      * Should only be  be called by `.flatMap`.
+      *
+      * Copied from Scala's `Future` implementation.
+      */
+    private[execution] def linkRootOf(target: LightPromise[A]): Unit =
+      link(target.compressedRoot())
+
+
+    /** Get the promise at the root of the chain of linked promises. Used
+      * by `compressedRoot()`.  The `compressedRoot()` method should
+      * be called instead of this method, as it is important to
+      * compress the link chain whenever possible.
+      *
+      * Copied from Scala's `Future` implementation.
+      */
+    @tailrec private def root: LightPromise[A] =
+      state.get match {
+        case linked: LightPromise[_] => linked.asInstanceOf[LightPromise[A]].root
+        case _ => this
+      }
+
+    /** Get the root promise for this promise, compressing the link
+      * chain to that promise if necessary.
+      *
+      * For promises that are not linked, the result of calling
+      * `compressedRoot()` will the promise itself. However for linked
+      * promises, this method will traverse each link until it locates
+      * the root promise at the base of the link chain.
+      *
+      * As a side effect of calling this method, the link from this
+      * promise back to the root promise will be updated
+      * ("compressed") to point directly to the root promise. This
+      * allows intermediate promises in the link chain to be garbage
+      * collected. Also, subsequent calls to this method should be
+      * faster as the link chain will be shorter.
+      *
+      * Copied from Scala's `Future` implementation.
+      */
+    @tailrec private def compressedRoot(): LightPromise[A] =
+      state.get match {
+        case linked: LightPromise[_] =>
+          val target = linked.asInstanceOf[LightPromise[A]].root
+          if (linked eq target) target
+          else if (state.compareAndSet(linked, target)) target
+          else compressedRoot() // retry
+        case _ =>
+          this
+      }
+
+    /** Link this promise to another promise so that both promises share
+      * the same externally-visible state. Depending on the current
+      * state of this promise, this may involve different things. For
+      * example, any onComplete listeners will need to be transferred.
+      *
+      * If this promise is already completed, then the same effect as
+      * linking - sharing the same completed value - is achieved by
+      * simply sending this promise's result to the target promise.
+      *
+      * Copied from Scala's `Future` implementation.
+      */
+    @tailrec private def link(target: LightPromise[A]): Unit = if (this ne target) {
+      state.get match {
+        case null =>
+          if (!state.compareAndSet(null, target)) link(target)
+        case r: Try[_] =>
+          target.complete(r.asInstanceOf[Try[A]])
+        case _: LightPromise[_] =>
+          compressedRoot().link(target)
+        case oneListener: Listener =>
+          if (state.compareAndSet(oneListener, target))
+            target.dispatchOrAddListener(oneListener)
+          else
+            link(target) // retry
+        case listeners: List[_] =>
+          if (state.compareAndSet(listeners, target))
+            target.dispatchOrAddListeners(listeners.asInstanceOf[List[Listener]])
+          else
+            link(target) // retry
+      }
+    }
+
+    /** Tries to add the callback, if already completed, it dispatches the
+      * callback to be executed.  Used by `onComplete()` to add
+      * callbacks to a promise and by `link()` to transfer callbacks
+      * to the root promise when linking two promises together.
+      * 
+      * Copied from Scala's `Future` implementation.
+      */
+    @tailrec private def dispatchOrAddListener(ref: Listener): Unit =
+      state.get match {
+        case r: Try[_] =>
+          ref.execute(r)
+        case null =>
+          if (!state.compareAndSet(null, ref)) dispatchOrAddListener(ref)
+        case prev: Listener =>
+          if (!state.compareAndSet(prev, ref :: prev :: Nil)) dispatchOrAddListener(ref)
+        case prev: LightPromise[_] =>
+          prev.asInstanceOf[LightPromise[A]].dispatchOrAddListener(ref)
+        case prev: List[_] =>
+          val list = ref :: prev.asInstanceOf[List[Listener]]
+          if (!state.compareAndSet(prev, list)) dispatchOrAddListener(ref)
+      }
+
+    /** Tries to add the list of callbacks, if already completed, it
+      * dispatches the callbacks to be executed.  Used by
+      * `onComplete()` to add callbacks to a promise and by `link()`
+      * to transfer callbacks to the root promise when linking two
+      * promises together.
+      *
+      * Copied from Scala's `Future` implementation.
+      */
+    @tailrec private def dispatchOrAddListeners(list: List[Listener]): Unit =
+      state.get match {
+        case r: Try[_] =>
+          list.foreach(_.execute(r))
+        case null =>
+          if (!state.compareAndSet(null, list)) dispatchOrAddListeners(list)
+        case prev: Listener =>
+          if (!state.compareAndSet(prev, prev :: list)) dispatchOrAddListeners(list)
+        case prev: LightPromise[_] =>
+          prev.asInstanceOf[LightPromise[A]].dispatchOrAddListeners(list)
+        case prev: List[_] =>
+          val list2 = list ::: prev.asInstanceOf[List[Listener]]
+          if (!state.compareAndSet(prev, list2)) dispatchOrAddListeners(list)
       }
 
     private def _onComplete[U](f: (Try[A]) => U, mkCallback: (Try[Any] => Any, Try[Any], ExecutionContext) => Callback)
@@ -621,17 +783,17 @@ object FastFuture {
             ec.execute(mkCallback(fAny, ref, ec))
           case null =>
             val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
-            if (!state.compareAndSet(null, Listener(fAny, mkCallback, ec)))
-              loop(state, fAny, l) // retry
+            if (!state.compareAndSet(null, Listener(fAny, mkCallback, ec))) loop(state, fAny, l) // retry?
           case ref: Listener =>
             val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
-            if (!state.compareAndSet(ref, l :: ref :: Nil))
-              loop(state, fAny, l) // retry
+            if (!state.compareAndSet(ref, l :: ref :: Nil)) loop(state, fAny, l) // retry?
+          case ref: LightPromise[_] =>
+            val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
+            ref.dispatchOrAddListener(l)
           case ref: List[_] =>
             val list = ref.asInstanceOf[List[Listener]]
             val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
-            if (!state.compareAndSet(ref, l :: list))
-              loop(state, fAny, l) // retry
+            if (!state.compareAndSet(ref, l :: list)) loop(state, fAny, l) // retry?
         }
       }
 
@@ -705,38 +867,10 @@ object FastFuture {
   private final case class Listener(
     call: Try[Any] => Any,
     mkCallback: MkCallback,
-    context: ExecutionContext
-  )
+    context: ExecutionContext) {
 
-  private final class OnComplete(state: AtomicAny[AnyRef])
-    extends (Try[Any] => Any) {
-
-    def execute(l: Listener, result: Try[Any]): Unit = {
-      val mk = l.mkCallback
-      l.context.execute(mk(l.call, result, l.context))
-    }
-
-    override def apply(result: Try[Any]): Unit = {
-      val prev: AnyRef = state.getAndSet(result)
-
-      if (prev != null) {
-        if (prev.isInstanceOf[Listener]) {
-          val f = prev.asInstanceOf[Listener]
-          execute(f, result)
-        }
-        else if (prev.isInstanceOf[List[_]]) {
-          var cursor = prev.asInstanceOf[List[Listener]]
-          while (cursor ne Nil) {
-            val f = cursor.head
-            cursor = cursor.tail
-            execute(f, result)
-          }
-        }
-        else { // Try
-          throw new IllegalStateException("Protocol violation, callback called multiple times!")
-        }
-      }
-    }
+    def execute(result: Try[Any]): Unit =
+      context.execute(mkCallback(call, result, context))
   }
 
   private class TrampolinedCallback(f: Try[Any] => Any, r: Try[Any])
@@ -765,7 +899,4 @@ object FastFuture {
       case Success(a) => Right(a)
       case Failure(e) => Left(e)
     }))
-
-  private[this] final val spentComplete: (Try[Any] => Nothing) =
-    _ => throw new IllegalStateException("LightPromise was already completed!")
 }
