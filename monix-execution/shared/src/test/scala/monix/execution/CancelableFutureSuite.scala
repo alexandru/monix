@@ -111,7 +111,7 @@ object CancelableFutureSuite extends TestSuite[TestScheduler] {
     assert(b.isCanceled, "b.isCanceled")
   }
 
-  test("async is chain-able, test 2") { implicit s =>
+  test("async is chain-able, test 3") { implicit s =>
     val b = BooleanCancelable()
     val fa = CancelableFuture.async[Int] { _ => ChainedCancelable(b) }
 

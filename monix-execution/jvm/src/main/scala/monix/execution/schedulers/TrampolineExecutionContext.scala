@@ -19,7 +19,6 @@ package monix.execution.schedulers
 
 
 import monix.execution.misc.NonFatal
-
 import scala.annotation.tailrec
 import scala.concurrent.{BlockContext, CanAwait, ExecutionContext}
 
