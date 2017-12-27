@@ -24,7 +24,7 @@ import monix.execution.misc.NonFatal
 
 private[eval] object CoevalRunLoop {
   private type Current = Coeval[Any]
-  private type Bind = Any => Coeval[Any]
+  private type Bind = Coeval.Frame[Any, Any]
   private type CallStack = ArrayStack[Bind]
 
   /** Trampoline for lazy evaluation. */
@@ -38,12 +38,12 @@ private[eval] object CoevalRunLoop {
 
     do {
       current match {
-        case FlatMap(fa, bindNext) =>
+        case ref @ FlatMap(fa, _, _) =>
           if (bFirst ne null) {
             if (bRest eq null) bRest = createCallStack()
             bRest.push(bFirst)
           }
-          bFirst = bindNext.asInstanceOf[Bind]
+          bFirst = ref
           current = fa
 
         case Now(value) =>
@@ -75,26 +75,22 @@ private[eval] object CoevalRunLoop {
         case eval @ Once(_) =>
           current = eval.run
 
-        case ref @ Error(ex) =>
-          findErrorHandler(bFirst, bRest) match {
+        case ref @ Error(error) =>
+          tryRecoverError(error, bFirst, bRest) match {
             case null =>
               return ref
-            case bind =>
-              // Try/catch described as statement, otherwise ObjectRef happens ;-)
-              try { current = bind.recover(ex) }
-              catch { case NonFatal(e) => current = Error(e) }
+            case next =>
+              current = next
               bFirst = null
           }
       }
 
       if (hasUnboxed) {
-        popNextBind(bFirst, bRest) match {
+        bindNext(unboxed, bFirst, bRest) match {
           case null =>
             return (if (current ne null) current else Now(unboxed)).asInstanceOf[Eager[A]]
           case bind =>
-            // Try/catch described as statement, otherwise ObjectRef happens ;-)
-            try { current = bind(unboxed) }
-            catch { case NonFatal(ex) => current = Error(ex) }
+            current = bind
             hasUnboxed = false
             unboxed = null
             bFirst = null
@@ -106,38 +102,46 @@ private[eval] object CoevalRunLoop {
     // $COVERAGE-ON$
   }
 
-  private def findErrorHandler(bFirst: Bind, bRest: CallStack): StackFrame[Any, Coeval[Any]] = {
-    var result: StackFrame[Any, Coeval[Any]] = null
+  private def tryRecoverError(error: Throwable, bFirst: Bind, bRest: CallStack): Coeval[Any] = {
+    var result: Coeval[Any] = null
     var cursor = bFirst
     var continue = true
 
     while (continue) {
-      if (cursor != null && cursor.isInstanceOf[StackFrame[_, _]]) {
-        result = cursor.asInstanceOf[StackFrame[Any, Coeval[Any]]]
-        continue = false
-      } else {
-        cursor = if (bRest ne null) bRest.pop() else null
-        continue = cursor != null
+      cursor match {
+        case FlatMap(_, _, g) if g != null =>
+          try { result = g(error) }
+          catch { case NonFatal(e) => result = Error(e) }
+          continue = false
+        case _ =>
+          cursor = if (bRest ne null) bRest.pop() else null
+          continue = cursor != null
       }
     }
     result
   }
 
-  private def popNextBind(bFirst: Bind, bRest: CallStack): Bind = {
-    if ((bFirst ne null) && !bFirst.isInstanceOf[StackFrame.ErrorHandler[_, _]])
-      return bFirst
+  private def bindNext(value: Any, bFirst: Bind, bRest: CallStack): Coeval[Any] = {
+    var result: Coeval[Any] = null
+    var cursor = bFirst
+    var continue = true
 
-    if (bRest eq null) return null
-    do {
-      bRest.pop() match {
-        case null => return null
-        case _: StackFrame.ErrorHandler[_, _] => // next please
-        case ref => return ref
+    while (continue) {
+      cursor match {
+        case FlatMap(_, f, _) if f != null =>
+          try { result = f(value) }
+          catch { case NonFatal(e) => result = Error(e) }
+          continue = false
+        case Map(_, f, _) =>
+          try { result = Now(f(value)) }
+          catch { case NonFatal(e) => result = Error(e) }
+          continue = false
+        case _ =>
+          cursor = if (bRest ne null) bRest.pop() else null
+          continue = cursor != null
       }
-    } while (true)
-    // $COVERAGE-OFF$
-    null
-    // $COVERAGE-ON$
+    }
+    result
   }
 
   private def createCallStack(): CallStack =
