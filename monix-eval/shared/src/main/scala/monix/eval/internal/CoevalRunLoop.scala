@@ -75,22 +75,26 @@ private[eval] object CoevalRunLoop {
         case eval @ Once(_) =>
           current = eval.run
 
-        case ref @ Error(error) =>
-          tryRecoverError(error, bFirst, bRest) match {
+        case ref @ Error(ex) =>
+          findErrorHandler(bFirst, bRest) match {
             case null =>
               return ref
-            case next =>
-              current = next
+            case bind =>
+              // Try/catch described as statement, otherwise ObjectRef happens ;-)
+              try { current = bind(ex) }
+              catch { case NonFatal(e) => current = Error(e) }
               bFirst = null
           }
       }
 
       if (hasUnboxed) {
-        bindNext(unboxed, bFirst, bRest) match {
+        popNextBind(bFirst, bRest) match {
           case null =>
             return (if (current ne null) current else Now(unboxed)).asInstanceOf[Eager[A]]
           case bind =>
-            current = bind
+            // Try/catch described as statement, otherwise ObjectRef happens ;-)
+            try { current = bind(unboxed) }
+            catch { case NonFatal(ex) => current = Error(ex) }
             hasUnboxed = false
             unboxed = null
             bFirst = null
@@ -102,16 +106,15 @@ private[eval] object CoevalRunLoop {
     // $COVERAGE-ON$
   }
 
-  private def tryRecoverError(error: Throwable, bFirst: Bind, bRest: CallStack): Coeval[Any] = {
-    var result: Coeval[Any] = null
+  private def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Coeval[Any] = {
+    var result: Throwable => Coeval[Any] = null
     var cursor = bFirst
     var continue = true
 
     while (continue) {
       cursor match {
         case FlatMap(_, _, g) if g != null =>
-          try { result = g(error) }
-          catch { case NonFatal(e) => result = Error(e) }
+          result = g
           continue = false
         case _ =>
           cursor = if (bRest ne null) bRest.pop() else null
@@ -121,22 +124,25 @@ private[eval] object CoevalRunLoop {
     result
   }
 
-  private def bindNext(value: Any, bFirst: Bind, bRest: CallStack): Coeval[Any] = {
-    var result: Coeval[Any] = null
+  private def popNextBind(bFirst: Bind, bRest: CallStack): Any => Coeval[Any] = {
+    var result: Any => Coeval[Any] = null
     var cursor = bFirst
     var continue = true
 
     while (continue) {
       cursor match {
-        case FlatMap(_, f, _) if f != null =>
-          try { result = f(value) }
-          catch { case NonFatal(e) => result = Error(e) }
+        case FlatMap(_, f, _) =>
+          if (f != null) {
+            result = f
+            continue = false
+          } else {
+            cursor = if (bRest ne null) bRest.pop() else null
+            continue = cursor != null
+          }
+        case ref @ Map(_, _, _) =>
+          result = ref
           continue = false
-        case Map(_, f, _) =>
-          try { result = Now(f(value)) }
-          catch { case NonFatal(e) => result = Error(e) }
-          continue = false
-        case _ =>
+        case null =>
           cursor = if (bRest ne null) bRest.pop() else null
           continue = cursor != null
       }
