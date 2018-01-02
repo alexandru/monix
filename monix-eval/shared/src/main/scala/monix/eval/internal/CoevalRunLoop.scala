@@ -107,47 +107,43 @@ private[eval] object CoevalRunLoop {
   }
 
   private def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Coeval[Any] = {
-    var result: Throwable => Coeval[Any] = null
     var cursor = bFirst
-    var continue = true
 
-    while (continue) {
+    do {
       cursor match {
         case FlatMap(_, _, g) if g != null =>
-          result = g
-          continue = false
+          return g
         case _ =>
           cursor = if (bRest ne null) bRest.pop() else null
-          continue = cursor != null
+          if (cursor == null) return null
       }
-    }
-    result
+    } while (true)
+    // $COVERAGE-OFF$
+    null
+    // $COVERAGE-ON$
   }
 
   private def popNextBind(bFirst: Bind, bRest: CallStack): Any => Coeval[Any] = {
-    var result: Any => Coeval[Any] = null
     var cursor = bFirst
-    var continue = true
-
-    while (continue) {
+    do {
       cursor match {
         case FlatMap(_, f, _) =>
           if (f != null) {
-            result = f
-            continue = false
+            return f
           } else {
             cursor = if (bRest ne null) bRest.pop() else null
-            continue = cursor != null
+            if (cursor == null) return null
           }
         case ref @ Map(_, _, _) =>
-          result = ref
-          continue = false
+          return ref
         case null =>
           cursor = if (bRest ne null) bRest.pop() else null
-          continue = cursor != null
+          if (cursor == null) return null
       }
-    }
-    result
+    } while (true)
+    // $COVERAGE-OFF$
+    null
+    // $COVERAGE-ON$
   }
 
   private def createCallStack(): CallStack =

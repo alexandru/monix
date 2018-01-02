@@ -394,7 +394,7 @@ sealed abstract class Task[+A] extends Serializable { self =>
     * from the source.
     */
   final def attempt: Task[Either[Throwable, A]] =
-    FlatMap(this, AttemptTask.asInstanceOf[A => Task[Either[Throwable, A]]])
+    FlatMap(this, nowRightConstructor, nowLeftConstructor)
 
   /** Transforms a [[Task]] into a [[Coeval]] that tries to execute the
     * source synchronously, returning either `Right(value)` in case a
@@ -419,7 +419,7 @@ sealed abstract class Task[+A] extends Serializable { self =>
     * of the function.
     */
   final def flatMap[B](f: A => Task[B]): Task[B] =
-    FlatMap(this, f)
+    FlatMap(this, f, null)
 
   /** Given a source Task that emits another Task, this function
     * flattens the result, returning a Task equivalent to the emitted
@@ -842,7 +842,7 @@ sealed abstract class Task[+A] extends Serializable { self =>
     * the source.
     */
   final def materialize: Task[Try[A]] =
-    FlatMap(this, MaterializeTask.asInstanceOf[A => Task[Try[A]]])
+    FlatMap(this, nowSuccessConstructor, nowFailureConstructor)
 
   /** Dematerializes the source's result from a `Try`. */
   final def dematerialize[B](implicit ev: A <:< Try[B]): Task[B] =
@@ -862,7 +862,7 @@ sealed abstract class Task[+A] extends Serializable { self =>
     * See [[onErrorRecoverWith]] for the version that takes a partial function.
     */
   final def onErrorHandleWith[B >: A](f: Throwable => Task[B]): Task[B] =
-    FlatMap(this, StackFrame.errorHandler(nowConstructor, f))
+    FlatMap(this, null, f)
 
   /** Creates a new task that in case of error will fallback to the
     * given backup task.
@@ -1018,7 +1018,7 @@ sealed abstract class Task[+A] extends Serializable { self =>
     * @param fe function that transforms an error of the receiver
     */
   final def transformWith[R](fa: A => Task[R], fe: Throwable => Task[R]): Task[R] =
-    FlatMap(this, StackFrame.fold(fa, fe))
+    FlatMap(this, fa, fe)
 
   /** Zips the values of `this` and `that` task, and creates a new task
     * that will emit the tuple of their results.
@@ -2120,19 +2120,24 @@ object Task extends TaskInstancesLevel1 {
   /** Internal state, the result of [[Task.defer]] */
   private[eval] final case class Suspend[+A](thunk: () => Task[A])
     extends Task[A]
+  
+  private[eval] sealed abstract class Frame[S, +A] extends Task[A] {
+    def source: Task[S]
+  }
 
   /** Internal [[Task]] state that is the result of applying `flatMap`. */
-  private[eval] final case class FlatMap[A, B](source: Task[A], f: A => Task[B])
-    extends Task[B]
+  private[eval] final case class FlatMap[S, +A](
+    source: Task[S], f: S => Task[A], g: Throwable => Task[A])
+    extends Frame[S, A]
 
   /** Internal [[Coeval]] state that is the result of applying `map`. */
   private[eval] final case class Map[S, +A](source: Task[S], f: S => A, index: Int)
-    extends Task[A] with (S => Task[A]) {
+    extends Frame[S, A] with (S => Task[A]) {
 
     def apply(value: S): Task[A] =
       new Now(f(value))
     override def toString: String =
-      super[Task].toString
+      super[Frame].toString
   }
 
   /** Constructs a lazy [[Task]] instance whose result will
@@ -2243,21 +2248,25 @@ object Task extends TaskInstancesLevel1 {
   private final val raiseConstructor: (Throwable => Task[Nothing]) =
     e => new Error(e)
 
-  /** Used as optimization by [[Task.attempt]]. */
-  private object AttemptTask extends StackFrame[Any, Task[Either[Throwable, Any]]] {
-    override def apply(a: Any): Task[Either[Throwable, Any]] =
-      new Now(new Right(a))
-    override def recover(e: Throwable): Task[Either[Throwable, Any]] =
-      new Now(new Left(e))
-  }
+  /** Reusable internal references for optimizing [[Task#attempt]]. */
+  private type AttemptN = Any => Task[Either[Throwable, Nothing]]
 
-  /** Used as optimization by [[Task.materialize]]. */
-  private object MaterializeTask extends StackFrame[Any, Task[Try[Any]]] {
-    override def apply(a: Any): Task[Try[Any]] =
-      new Now(new Success(a))
-    override def recover(e: Throwable): Task[Try[Any]] =
-      new Now(new Failure(e))
-  }
+  /** Internal, reusable reference, optimization for [[Task#attempt]]. */
+  private final val nowRightConstructor =
+    ((a: Any) => new Now(new Right(a))).asInstanceOf[AttemptN]
+  /** Internal, reusable reference, optimization for [[Task#attempt]]. */
+  private final val nowLeftConstructor =
+    ((e: Throwable) => new Now(new Left(e))).asInstanceOf[AttemptN]
+
+  /** Reusable internal references for optimizing [[Task#materialize]]. */
+  private type MaterializeN = Any => Task[Try[Nothing]]
+
+  /** Internal, reusable reference; optimization for [[Task#materialize]]. */
+  private final val nowSuccessConstructor =
+    ((a: Any) => new Now(new Success(a))).asInstanceOf[MaterializeN]
+  /** Internal, reusable reference; optimization for [[Task#materialize]]. */
+  private final val nowFailureConstructor =
+    ((e: Throwable) => new Now(new Failure(e))).asInstanceOf[MaterializeN]
 }
 
 private[eval] abstract class TaskInstancesLevel1 extends TaskInstancesLevel0 {

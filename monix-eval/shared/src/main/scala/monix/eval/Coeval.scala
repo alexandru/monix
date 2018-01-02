@@ -1001,20 +1001,30 @@ object Coeval extends CoevalInstancesLevel0 {
       super[Frame].toString
   }
 
+  /** Internal, reusable reference. */
   private final val nowConstructor: (Any => Coeval[Nothing]) =
     ((a: Any) => new Now(a)).asInstanceOf[Any => Coeval[Nothing]]
+  /** Internal, reusable reference. */
   private final val raiseConstructor: (Throwable => Coeval[Nothing]) =
     (e: Throwable) => new Error(e)
 
+  /** Reusable internal references for optimizing [[Coeval#attempt]]. */
   private type AttemptN = Any => Coeval[Either[Throwable, Nothing]]
+
+  /** Internal, reusable reference, optimization for [[Coeval#attempt]]. */
   private final val nowRightConstructor =
     ((a: Any) => new Now(new Right(a))).asInstanceOf[AttemptN]
+  /** Internal, reusable reference, optimization for [[Coeval#attempt]]. */
   private final val nowLeftConstructor =
     ((e: Throwable) => new Now(new Left(e))).asInstanceOf[AttemptN]
 
+  /** Reusable internal references for optimizing [[Coeval#materialize]]. */
   private type MaterializeN = Any => Coeval[Try[Nothing]]
+
+  /** Internal, reusable reference; optimization for [[Coeval#materialize]]. */
   private final val nowSuccessConstructor =
     ((a: Any) => new Now(new Success(a))).asInstanceOf[MaterializeN]
+  /** Internal, reusable reference; optimization for [[Coeval#materialize]]. */
   private final val nowFailureConstructor =
     ((e: Throwable) => new Now(new Failure(e))).asInstanceOf[MaterializeN]
 

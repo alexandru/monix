@@ -30,7 +30,7 @@ import scala.util.{Failure, Success, Try}
 
 private[eval] object TaskRunLoop {
   private type Current = Task[Any]
-  private type Bind = Any => Task[Any]
+  private type Bind = Task.Frame[Any, Any]
   private type CallStack = ArrayStack[Bind]
 
   // We always start from 1
@@ -169,12 +169,12 @@ private[eval] object TaskRunLoop {
       do {
         if (frameIndex != 0) {
           current match {
-            case FlatMap(fa, bindNext) =>
+            case ref @ FlatMap(fa, _, _) =>
               if (bFirst ne null) {
                 if (bRest eq null) bRest = createCallStack()
                 bRest.push(bFirst)
               }
-              bFirst = bindNext.asInstanceOf[Bind]
+              bFirst = ref
               current = fa
 
             case Now(value) =>
@@ -190,12 +190,12 @@ private[eval] object TaskRunLoop {
                 current = Error(e)
               }
 
-            case bindNext @ Map(fa, _, _) =>
+            case ref @ Map(fa, _, _) =>
               if (bFirst ne null) {
                 if (bRest eq null) bRest = createCallStack()
                 bRest.push(bFirst)
               }
-              bFirst = bindNext.asInstanceOf[Bind]
+              bFirst = ref
               current = fa
 
             case Suspend(thunk) =>
@@ -210,7 +210,7 @@ private[eval] object TaskRunLoop {
                   return
                 case bind =>
                   // Try/catch described as statement, otherwise ObjectRef happens ;-)
-                  try { current = bind.recover(error) }
+                  try { current = bind(error) }
                   catch { case NonFatal(e) => current = Error(e) }
                   frameIndex = em.nextFrameIndex(frameIndex)
                   bFirst = null
@@ -295,12 +295,12 @@ private[eval] object TaskRunLoop {
     do {
       if (frameIndex != 0) {
         current match {
-          case FlatMap(fa, bindNext) =>
+          case ref @ FlatMap(fa, _, _) =>
             if (bFirst ne null) {
               if (bRest eq null) bRest = createCallStack()
               bRest.push(bFirst)
             }
-            bFirst = bindNext.asInstanceOf[Bind]
+            bFirst = ref
             current = fa
 
           case Now(value) =>
@@ -316,12 +316,12 @@ private[eval] object TaskRunLoop {
               current = Error(e)
             }
 
-          case bindNext @ Map(fa, _, _) =>
+          case ref @ Map(fa, _, _) =>
             if (bFirst ne null) {
               if (bRest eq null) bRest = createCallStack()
               bRest.push(bFirst)
             }
-            bFirst = bindNext.asInstanceOf[Bind]
+            bFirst = ref
             current = fa
 
           case Suspend(thunk) =>
@@ -336,7 +336,7 @@ private[eval] object TaskRunLoop {
                 return Cancelable.empty
               case bind =>
                 // Try/catch described as statement, otherwise ObjectRef happens ;-)
-                try { current = bind.recover(error) }
+                try { current = bind(error) }
                 catch { case NonFatal(e) => current = Error(e) }
                 frameIndex = em.nextFrameIndex(frameIndex)
                 bFirst = null
@@ -420,12 +420,12 @@ private[eval] object TaskRunLoop {
     do {
       if (frameIndex != 0) {
         current match {
-          case FlatMap(fa, bindNext) =>
+          case ref @ FlatMap(fa, _, _) =>
             if (bFirst ne null) {
               if (bRest eq null) bRest = createCallStack()
               bRest.push(bFirst)
             }
-            bFirst = bindNext.asInstanceOf[Bind]
+            bFirst = ref
             current = fa
 
           case Now(value) =>
@@ -442,12 +442,12 @@ private[eval] object TaskRunLoop {
                 current = Error(e)
             }
 
-          case bindNext@Map(fa, _, _) =>
+          case ref @ Map(fa, _, _) =>
             if (bFirst ne null) {
               if (bRest eq null) bRest = createCallStack()
               bRest.push(bFirst)
             }
-            bFirst = bindNext.asInstanceOf[Bind]
+            bFirst = ref
             current = fa
 
           case Suspend(thunk) =>
@@ -465,7 +465,7 @@ private[eval] object TaskRunLoop {
                 return CancelableFuture.failed(error)
               case bind =>
                 // Try/catch described as statement to prevent ObjectRef ;-)
-                try { current = bind.recover(error) }
+                try { current = bind(error) }
                 catch { case NonFatal(e) => current = Error(e) }
                 frameIndex = em.nextFrameIndex(frameIndex)
                 bFirst = null
@@ -653,33 +653,38 @@ private[eval] object TaskRunLoop {
     }
   }
 
-  private def findErrorHandler(bFirst: Bind, bRest: CallStack): StackFrame[Any, Task[Any]] = {
-    var result: StackFrame[Any, Task[Any]] = null
+  private def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Task[Any] = {
     var cursor = bFirst
-    var continue = true
-
-    while (continue) {
-      if (cursor != null && cursor.isInstanceOf[StackFrame[_, _]]) {
-        result = cursor.asInstanceOf[StackFrame[Any, Task[Any]]]
-        continue = false
-      } else {
-        cursor = if (bRest ne null) bRest.pop() else null
-        continue = cursor != null
+    do {
+      cursor match {
+        case FlatMap(_, _, g) if g != null =>
+          return g
+        case _ =>
+          cursor = if (bRest ne null) bRest.pop() else null
+          if (cursor == null) return null
       }
-    }
-    result
+    } while (true)
+    // $COVERAGE-OFF$
+    null
+    // $COVERAGE-ON$
   }
 
-  private def popNextBind(bFirst: Bind, bRest: CallStack): Bind = {
-    if ((bFirst ne null) && !bFirst.isInstanceOf[StackFrame.ErrorHandler[_, _]])
-      return bFirst
-
-    if (bRest eq null) return null
+  private def popNextBind(bFirst: Bind, bRest: CallStack): Any => Task[Any] = {
+    var cursor = bFirst
     do {
-      bRest.pop() match {
-        case null => return null
-        case _: StackFrame.ErrorHandler[_, _] => // next please
-        case ref => return ref
+      cursor match {
+        case FlatMap(_, f, _) =>
+          if (f != null) {
+            return f
+          } else {
+            cursor = if (bRest ne null) bRest.pop() else null
+            if (cursor == null) return null
+          }
+        case ref @ Map(_, _, _) =>
+          return ref
+        case null =>
+          cursor = if (bRest ne null) bRest.pop() else null
+          if (cursor == null) return null
       }
     } while (true)
     // $COVERAGE-OFF$
