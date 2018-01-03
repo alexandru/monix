@@ -21,8 +21,9 @@ import cats.{Eval, Monoid}
 import cats.effect.IO
 import cats.kernel.Semigroup
 import monix.eval.Coeval._
-import monix.eval.instances.{CatsSyncForCoeval, CatsMonadToMonoid, CatsMonadToSemigroup}
+import monix.eval.instances.{CatsMonadToMonoid, CatsMonadToSemigroup, CatsSyncForCoeval}
 import monix.eval.internal.{CoevalRunLoop, LazyOnSuccess}
+import monix.execution.internal.ADT
 import monix.execution.misc.NonFatal
 import monix.execution.internal.Platform.fusionMaxStackDepth
 
@@ -128,7 +129,9 @@ import scala.util.{Failure, Success, Try}
   * use `cats.Eval`, but if you need to suspend side effects or you
   * need error handling capabilities, then use `Coeval`.
   */
-sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
+sealed abstract class Coeval[+A](id: Int) extends ADT(id)
+  with (() => A) with Serializable { self =>
+
   /** Evaluates the underlying computation and returns the result.
     *
     * NOTE: this can throw exceptions.
@@ -850,6 +853,19 @@ object Coeval extends CoevalInstancesLevel0 {
   def zip6[A1, A2, A3, A4, A5, A6](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5], fa6: Coeval[A6]): Coeval[(A1, A2, A3, A4, A5, A6)] =
     map6(fa1, fa2, fa3, fa4, fa5, fa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
+  /** ADT id for [[Now]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val NOW_ID = 1
+  /** ADT id for [[Error]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val ERROR_ID = 2
+  /** ADT id for [[Once]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val ONCE_ID = 4
+  /** ADT id for [[Always]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val ALWAYS_ID = 5
+  /** ADT id for [[Suspend]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val SUSPEND_ID = 6
+  /** ADT id for [[Frame]]. See [[monix.execution.internal.ADT]]. */
+  private[eval] final val FRAME_ID = 7
+
   /** The `Eager` type represents a strict, already evaluated result
     * of a [[Coeval]] that either resulted in success, wrapped in a
     * [[Now]], or in an error, wrapped in an [[Error]].
@@ -858,9 +874,7 @@ object Coeval extends CoevalInstancesLevel0 {
     * application of functions such as `map` and `flatMap` produces
     * [[Coeval]] references that are still lazily evaluated.
     */
-  sealed abstract class Eager[+A] extends Coeval[A] with Product {
-    self =>
-
+  sealed abstract class Eager[+A](id: Int) extends Coeval[A](id) with Product {
     /** Returns true if value is a successful one. */
     final def isSuccess: Boolean = this match {
       case Now(_) => true
@@ -906,7 +920,7 @@ object Coeval extends CoevalInstancesLevel0 {
   /** Constructs an eager [[Coeval]] instance from a strict
     * value that's already known.
     */
-  final case class Now[+A](override val value: A) extends Eager[A] {
+  final case class Now[+A](override val value: A) extends Eager[A](NOW_ID) {
     override def apply(): A = value
     override def run: Now[A] = this
     override def runAttempt: Right[Nothing, A] = Right(value)
@@ -916,7 +930,7 @@ object Coeval extends CoevalInstancesLevel0 {
   /** Constructs an eager [[Coeval]] instance for
     * a result that represents an error.
     */
-  final case class Error(error: Throwable) extends Eager[Nothing] {
+  final case class Error(error: Throwable) extends Eager[Nothing](ERROR_ID) {
     override def apply(): Nothing = throw error
     override def run: Error = this
     override def runAttempt: Either[Throwable, Nothing] = Left(error)
@@ -930,7 +944,7 @@ object Coeval extends CoevalInstancesLevel0 {
     * When caching is not required or desired,
     * prefer [[Always]] or [[Now]].
     */
-  final class Once[+A](f: () => A) extends Coeval[A] with (() => A) { self =>
+  final class Once[+A](f: () => A) extends Coeval[A](ONCE_ID) with (() => A) {
     private[this] var thunk: () => A = f
 
     override def apply(): A = run match {
@@ -965,22 +979,28 @@ object Coeval extends CoevalInstancesLevel0 {
     * This type can be used for "lazy" values. In some sense it is
     * equivalent to using a Function0 value.
     */
-  final case class Always[+A](f: () => A) extends Coeval[A] {
-    override def apply(): A = f()
+  final case class Always[+A](thunk: () => A) extends Coeval[A](ALWAYS_ID) {
+    override def apply(): A = thunk()
 
     override def run: Eager[A] =
-      try Now(f()) catch { case e if NonFatal(e) => Error(e) }
+      try Now(thunk()) catch { case e if NonFatal(e) => Error(e) }
     override def runAttempt: Either[Throwable, A] =
-      try Right(f()) catch { case e if NonFatal(e) => Left (e) }
+      try Right(thunk()) catch { case e if NonFatal(e) => Left (e) }
     override def runTry: Try[A] =
-      try Success(f()) catch { case e if NonFatal(e) => Failure(e) }
+      try Success(thunk()) catch { case e if NonFatal(e) => Failure(e) }
   }
 
   /** Internal state, the result of [[Coeval.defer]] */
   private[eval] final case class Suspend[+A](thunk: () => Coeval[A])
-    extends Coeval[A]
+    extends Coeval[A](SUSPEND_ID)
 
-  private[eval] sealed abstract class Frame[S, +A] extends Coeval[A] {
+  /** Frames are functions to be registered in the so called
+    * internal callstack and can be triggered either by `.flatMap`
+    * or `.map` operations.
+    *
+    * See [[FlatMap]] and [[Map]].
+    */
+  private[eval] sealed abstract class Frame[S, +A] extends Coeval[A](FRAME_ID) {
     def source: Coeval[S]
   }
 

@@ -2089,7 +2089,7 @@ object Task extends TaskInstancesLevel1 {
   private[eval] final val ERROR_ID = 2
   /** ADT id for [[Eval]]. See [[monix.execution.internal.ADT]]. */
   private[eval] final val EVAL_ID = 3
-  /** ADT id for [[Eval]]. See [[monix.execution.internal.ADT]]. */
+  /** ADT id for [[Suspend]]. See [[monix.execution.internal.ADT]]. */
   private[eval] final val SUSPEND_ID = 4
   /** ADT id for [[Frame]]. See [[monix.execution.internal.ADT]]. */
   private[eval] final val FRAME_ID = 5
@@ -2138,6 +2138,12 @@ object Task extends TaskInstancesLevel1 {
   private[eval] final case class Suspend[+A](thunk: () => Task[A])
     extends Task[A](SUSPEND_ID)
 
+  /** Frames are functions to be registered in the so called
+    * internal callstack and can be triggered either by `.flatMap`
+    * or `.map` operations.
+    *
+    * See [[FlatMap]] and [[Map]].
+    */
   private[eval] sealed abstract class Frame[S, +A] extends Task[A](FRAME_ID) {
     def source: Task[S]
   }

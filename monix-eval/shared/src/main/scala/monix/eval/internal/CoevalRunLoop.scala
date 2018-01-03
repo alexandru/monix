@@ -19,6 +19,7 @@ package monix.eval.internal
 
 import monix.eval.Coeval
 import monix.eval.Coeval.{Always, Eager, Error, FlatMap, Map, Now, Once, Suspend}
+import monix.eval.Coeval.{NOW_ID, ERROR_ID, ALWAYS_ID, ONCE_ID, FRAME_ID, SUSPEND_ID}
 import monix.execution.internal.collection.ArrayStack
 import monix.execution.misc.NonFatal
 
@@ -37,67 +38,73 @@ private[eval] object CoevalRunLoop {
     var unboxed: AnyRef = null
 
     do {
-      current match {
-        case ref @ FlatMap(fa, _, _) =>
+      current.id match {
+        case FRAME_ID =>
+          val ref = current.asInstanceOf[Bind]
           if (bFirst ne null) {
             if (bRest eq null) bRest = new ArrayStack[Bind]()
             bRest.push(bFirst)
           }
           bFirst = ref
-          current = fa
+          current = ref.source
 
-        case Now(value) =>
-          unboxed = value.asInstanceOf[AnyRef]
+        case NOW_ID =>
+          val ref = current.asInstanceOf[Now[AnyRef]]
+          unboxed = ref.value
           hasUnboxed = true
 
-        case Always(thunk) =>
-          try {
-            unboxed = thunk().asInstanceOf[AnyRef]
-            hasUnboxed = true
+        case ALWAYS_ID =>
+          val ref = current.asInstanceOf[Always[AnyRef]]
+          // Indirection to avoid ObjectRef & BoxedUnit
+          val value = try {
+            val ret = ref.thunk()
             current = null
-          } catch { case e if NonFatal(e) =>
-            current = Error(e)
+            hasUnboxed = true
+            ret
+          } catch {
+            case e if NonFatal(e) =>
+              current = new Error(e)
+              null
           }
+          unboxed = value
 
-        case bindNext @ Map(fa, _, _) =>
-          if (bFirst ne null) {
-            if (bRest eq null) bRest = new ArrayStack[Bind]()
-            bRest.push(bFirst)
-          }
-          bFirst = bindNext.asInstanceOf[Bind]
-          current = fa
+        case SUSPEND_ID =>
+          val ref = current.asInstanceOf[Suspend[AnyRef]]
+          // Indirection to avoid ObjectRef
+          val next = try ref.thunk() catch { case e if NonFatal(e) => new Error(e) }
+          current = next
 
-        case Suspend(thunk) =>
-          // Try/catch described as statement, otherwise ObjectRef happens ;-)
-          try { current = thunk() }
-          catch { case ex if NonFatal(ex) => current = Error(ex) }
+        case ONCE_ID =>
+          val ref = current.asInstanceOf[Once[AnyRef]]
+          current = ref.run
 
-        case eval @ Once(_) =>
-          current = eval.run
-
-        case ref @ Error(ex) =>
-          findErrorHandler(bFirst, bRest) match {
-            case null =>
-              return ref
-            case bind =>
-              // Try/catch described as statement, otherwise ObjectRef happens ;-)
-              try { current = bind(ex) }
-              catch { case e if NonFatal(e) => current = Error(e) }
-              bFirst = null
+        case ERROR_ID =>
+          val ref = current.asInstanceOf[Error]
+          val bind = findErrorHandler(bFirst, bRest)
+          // Not pattern matching in order to avoid usage of "BoxedUnit"
+          if (bind ne null) {
+            bFirst = null
+            // Indirection to avoid ObjectRef
+            val next = try bind(ref.error) catch { case e if NonFatal(e) => new Error(e) }
+            current = next
+          } else {
+            return ref
           }
       }
 
       if (hasUnboxed) {
-        popNextBind(bFirst, bRest) match {
-          case null =>
-            return (if (current ne null) current else Now(unboxed)).asInstanceOf[Eager[A]]
-          case bind =>
-            // Try/catch described as statement, otherwise ObjectRef happens ;-)
-            try { current = bind(unboxed) }
-            catch { case ex if NonFatal(ex) => current = Error(ex) }
-            hasUnboxed = false
-            unboxed = null
-            bFirst = null
+        val bind = popNextBind(bFirst, bRest)
+        // Not pattern matching in order to avoid usage of "BoxedUnit"
+        if (bind ne null) {
+          // Indirection to avoid ObjectRef
+          val next = try bind(unboxed) catch { case e if NonFatal(e) => new Error(e) }
+          current = next
+          // No longer in unboxed state
+          hasUnboxed = false
+          bFirst = null
+          unboxed = null // GC purposes
+        } else {
+          return (if (current ne null) current else Now(unboxed)).asInstanceOf[Eager[A]]
         }
       }
     } while (true)
@@ -108,41 +115,35 @@ private[eval] object CoevalRunLoop {
 
   private def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Coeval[Any] = {
     var cursor = bFirst
-
     do {
-      cursor match {
-        case FlatMap(_, _, g) if g != null =>
+      val next = cursor match {
+        case FlatMap(_, _, g) if g ne null =>
           return g
         case _ =>
-          cursor = if (bRest ne null) bRest.pop() else null
-          if (cursor == null) return null
+          if (bRest ne null) bRest.pop() else null
       }
-    } while (true)
-    // $COVERAGE-OFF$
+      // Indirection to avoid ObjectRef and liftedTree$
+      cursor = next
+    } while (cursor ne null)
+    // None found
     null
-    // $COVERAGE-ON$
   }
 
   private def popNextBind(bFirst: Bind, bRest: CallStack): Any => Coeval[Any] = {
     var cursor = bFirst
     do {
-      cursor match {
-        case FlatMap(_, f, _) =>
-          if (f != null) {
-            return f
-          } else {
-            cursor = if (bRest ne null) bRest.pop() else null
-            if (cursor == null) return null
-          }
+      val next = cursor match {
+        case FlatMap(_, f, _) if f ne null =>
+          return f
         case ref @ Map(_, _, _) =>
           return ref
-        case null =>
-          cursor = if (bRest ne null) bRest.pop() else null
-          if (cursor == null) return null
+        case _ =>
+          if (bRest ne null) bRest.pop() else null
       }
-    } while (true)
-    // $COVERAGE-OFF$
+      // Indirection to avoid ObjectRef and liftedTree$
+      cursor = next
+    } while (cursor ne null)
+    // None found
     null
-    // $COVERAGE-ON$
   }
 }
