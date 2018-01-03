@@ -166,134 +166,7 @@ private[eval] object TaskRunLoop {
       var unboxed: AnyRef = null
       var frameIndex = frameIndexInit
 
-      do {
-        if (frameIndex != 0) {
-          current match {
-            case ref @ FlatMap(fa, _, _) =>
-              if (bFirst ne null) {
-                if (bRest eq null) bRest = createCallStack()
-                bRest.push(bFirst)
-              }
-              bFirst = ref
-              current = fa
-
-            case Now(value) =>
-              unboxed = value.asInstanceOf[AnyRef]
-              hasUnboxed = true
-
-            case Eval(thunk) =>
-              try {
-                unboxed = thunk().asInstanceOf[AnyRef]
-                hasUnboxed = true
-                current = null
-              } catch { case NonFatal(e) =>
-                current = Error(e)
-              }
-
-            case ref @ Map(fa, _, _) =>
-              if (bFirst ne null) {
-                if (bRest eq null) bRest = createCallStack()
-                bRest.push(bFirst)
-              }
-              bFirst = ref
-              current = fa
-
-            case Suspend(thunk) =>
-              // Try/catch described as statement, otherwise ObjectRef happens ;-)
-              try { current = thunk() }
-              catch { case NonFatal(ex) => current = Error(ex) }
-
-            case Error(error) =>
-              findErrorHandler(bFirst, bRest) match {
-                case null =>
-                  cb.onError(error)
-                  return
-                case bind =>
-                  // Try/catch described as statement, otherwise ObjectRef happens ;-)
-                  try { current = bind(error) }
-                  catch { case NonFatal(e) => current = Error(e) }
-                  frameIndex = em.nextFrameIndex(frameIndex)
-                  bFirst = null
-              }
-
-            case Async(onFinish) =>
-              executeOnFinish(context, cb, rcb, bFirst, bRest, onFinish, frameIndex)
-              return
-
-            case ref: MemoizeSuspend[_] =>
-              // Already processed?
-              ref.value match {
-                case Some(materialized) =>
-                  materialized match {
-                    case Success(value) =>
-                      unboxed = value.asInstanceOf[AnyRef]
-                      hasUnboxed = true
-                      current = null
-                    case Failure(error) =>
-                      current = Error(error)
-                  }
-                case None =>
-                  val anyRef = ref.asInstanceOf[MemoizeSuspend[Any]]
-                  val isSuccess = startMemoization(anyRef, context, cb, bFirst, bRest, frameIndex)
-                  if (isSuccess) return
-                  current = ref
-              }
-          }
-
-          if (hasUnboxed) {
-            popNextBind(bFirst, bRest) match {
-              case null =>
-                cb.onSuccess(unboxed)
-                return
-              case bind =>
-                // Try/catch described as statement, otherwise ObjectRef happens ;-)
-                try { current = bind(unboxed) }
-                catch { case NonFatal(ex) => current = Error(ex) }
-                frameIndex = em.nextFrameIndex(frameIndex)
-                hasUnboxed = false
-                unboxed = null
-                bFirst = null
-            }
-          }
-        }
-        else {
-          // Force async boundary
-          restartAsync(current, context, cb, bFirst, bRest)
-          return
-        }
-      } while (true)
-    }
-
-    // Can happen to receive a `RestartCallback` (e.g. from Task.fork),
-    // in which case we should unwrap it
-    val cba = cb.asInstanceOf[Callback[Any]]
-    loop(source, context, cba, null, bFirst, bRest, frameIndex)
-  }
-
-  /** A run-loop that attempts to evaluate a `Task` without
-    * initializing a `Task.Context`, falling back to
-    * [[startWithCallback]] when the first `Async` boundary is hit.
-    *
-    * Function gets invoked by `Task.runAsync(cb: Callback)`.
-    */
-  def startLightWithCallback[A](
-    source: Task[A],
-    scheduler: Scheduler,
-    opts: Task.Options,
-    cb: Callback[A]): Cancelable = {
-
-    var current = source.asInstanceOf[Task[Any]]
-    var bFirst: Bind = null
-    var bRest: CallStack = null
-    // Values from Now, Always and Once are unboxed in this var, for code reuse
-    var hasUnboxed: Boolean = false
-    var unboxed: AnyRef = null
-    // Keeps track of the current frame, used for forced async boundaries
-    val em = scheduler.executionModel
-    var frameIndex = frameStart(em)
-
-    do {
-      if (frameIndex != 0) {
+      while (frameIndex != 0) {
         current match {
           case ref @ FlatMap(fa, _, _) =>
             if (bFirst ne null) {
@@ -333,7 +206,7 @@ private[eval] object TaskRunLoop {
             findErrorHandler(bFirst, bRest) match {
               case null =>
                 cb.onError(error)
-                return Cancelable.empty
+                return
               case bind =>
                 // Try/catch described as statement, otherwise ObjectRef happens ;-)
                 try { current = bind(error) }
@@ -342,12 +215,9 @@ private[eval] object TaskRunLoop {
                 bFirst = null
             }
 
-          case Async(_) =>
-            return goAsyncForLightCB(
-              current, scheduler, opts,
-              cb.asInstanceOf[Callback[Any]],
-              bFirst, bRest, frameIndex,
-              forceAsync = false)
+          case Async(onFinish) =>
+            executeOnFinish(context, cb, rcb, bFirst, bRest, onFinish, frameIndex)
+            return
 
           case ref: MemoizeSuspend[_] =>
             // Already processed?
@@ -362,19 +232,18 @@ private[eval] object TaskRunLoop {
                     current = Error(error)
                 }
               case None =>
-                return goAsyncForLightCB(
-                  current, scheduler, opts,
-                  cb.asInstanceOf[Callback[Any]],
-                  bFirst, bRest, frameIndex,
-                  forceAsync = false)
+                val anyRef = ref.asInstanceOf[MemoizeSuspend[Any]]
+                val isSuccess = startMemoization(anyRef, context, cb, bFirst, bRest, frameIndex)
+                if (isSuccess) return
+                current = ref
             }
         }
 
         if (hasUnboxed) {
           popNextBind(bFirst, bRest) match {
             case null =>
-              cb.onSuccess(unboxed.asInstanceOf[A])
-              return Cancelable.empty
+              cb.onSuccess(unboxed)
+              return
             case bind =>
               // Try/catch described as statement, otherwise ObjectRef happens ;-)
               try { current = bind(unboxed) }
@@ -386,18 +255,137 @@ private[eval] object TaskRunLoop {
           }
         }
       }
-      else {
-        // Force async boundary
-        return goAsyncForLightCB(
-          current, scheduler, opts,
-          cb.asInstanceOf[Callback[Any]],
-          bFirst, bRest, frameIndex,
-          forceAsync = true)
+      // frameIndex == 0, force async boundary
+      restartAsync(current, context, cb, bFirst, bRest)
+    }
+
+    // Can happen to receive a `RestartCallback` (e.g. from Task.fork),
+    // in which case we should unwrap it
+    val cba = cb.asInstanceOf[Callback[Any]]
+    loop(source, context, cba, null, bFirst, bRest, frameIndex)
+  }
+
+  /** A run-loop that attempts to evaluate a `Task` without
+    * initializing a `Task.Context`, falling back to
+    * [[startWithCallback]] when the first `Async` boundary is hit.
+    *
+    * Function gets invoked by `Task.runAsync(cb: Callback)`.
+    */
+  def startLightWithCallback[A](
+    source: Task[A],
+    scheduler: Scheduler,
+    opts: Task.Options,
+    cb: Callback[A]): Cancelable = {
+
+    var current = source.asInstanceOf[Task[Any]]
+    var bFirst: Bind = null
+    var bRest: CallStack = null
+    // Values from Now, Always and Once are unboxed in this var, for code reuse
+    var hasUnboxed: Boolean = false
+    var unboxed: AnyRef = null
+    // Keeps track of the current frame, used for forced async boundaries
+    val em = scheduler.executionModel
+    var frameIndex = frameStart(em)
+
+    while (frameIndex != 0) {
+      current match {
+        case ref @ FlatMap(fa, _, _) =>
+          if (bFirst ne null) {
+            if (bRest eq null) bRest = createCallStack()
+            bRest.push(bFirst)
+          }
+          bFirst = ref
+          current = fa
+
+        case Now(value) =>
+          unboxed = value.asInstanceOf[AnyRef]
+          hasUnboxed = true
+
+        case Eval(thunk) =>
+          try {
+            unboxed = thunk().asInstanceOf[AnyRef]
+            hasUnboxed = true
+            current = null
+          } catch { case NonFatal(e) =>
+            current = Error(e)
+          }
+
+        case ref @ Map(fa, _, _) =>
+          if (bFirst ne null) {
+            if (bRest eq null) bRest = createCallStack()
+            bRest.push(bFirst)
+          }
+          bFirst = ref
+          current = fa
+
+        case Suspend(thunk) =>
+          // Try/catch described as statement, otherwise ObjectRef happens ;-)
+          try { current = thunk() }
+          catch { case NonFatal(ex) => current = Error(ex) }
+
+        case Error(error) =>
+          findErrorHandler(bFirst, bRest) match {
+            case null =>
+              cb.onError(error)
+              return Cancelable.empty
+            case bind =>
+              // Try/catch described as statement, otherwise ObjectRef happens ;-)
+              try { current = bind(error) }
+              catch { case NonFatal(e) => current = Error(e) }
+              frameIndex = em.nextFrameIndex(frameIndex)
+              bFirst = null
+          }
+
+        case Async(_) =>
+          return goAsyncForLightCB(
+            current, scheduler, opts,
+            cb.asInstanceOf[Callback[Any]],
+            bFirst, bRest, frameIndex,
+            forceAsync = false)
+
+        case ref: MemoizeSuspend[_] =>
+          // Already processed?
+          ref.value match {
+            case Some(materialized) =>
+              materialized match {
+                case Success(value) =>
+                  unboxed = value.asInstanceOf[AnyRef]
+                  hasUnboxed = true
+                  current = null
+                case Failure(error) =>
+                  current = Error(error)
+              }
+            case None =>
+              return goAsyncForLightCB(
+                current, scheduler, opts,
+                cb.asInstanceOf[Callback[Any]],
+                bFirst, bRest, frameIndex,
+                forceAsync = false)
+          }
       }
-    } while (true)
-    // $COVERAGE-OFF$
-    null
-    // $COVERAGE-ON$
+
+      if (hasUnboxed) {
+        popNextBind(bFirst, bRest) match {
+          case null =>
+            cb.onSuccess(unboxed.asInstanceOf[A])
+            return Cancelable.empty
+          case bind =>
+            // Try/catch described as statement, otherwise ObjectRef happens ;-)
+            try { current = bind(unboxed) }
+            catch { case NonFatal(ex) => current = Error(ex) }
+            frameIndex = em.nextFrameIndex(frameIndex)
+            hasUnboxed = false
+            unboxed = null
+            bFirst = null
+        }
+      }
+    }
+    // frameIndex == 0, force async boundary
+    goAsyncForLightCB(
+      current, scheduler, opts,
+      cb.asInstanceOf[Callback[Any]],
+      bFirst, bRest, frameIndex,
+      forceAsync = true)
   }
 
   /** A run-loop that attempts to complete a `CancelableFuture`
@@ -417,106 +405,96 @@ private[eval] object TaskRunLoop {
     val em = scheduler.executionModel
     var frameIndex = frameStart(em)
 
-    do {
-      if (frameIndex != 0) {
-        current match {
-          case ref @ FlatMap(fa, _, _) =>
-            if (bFirst ne null) {
-              if (bRest eq null) bRest = createCallStack()
-              bRest.push(bFirst)
-            }
-            bFirst = ref
-            current = fa
+    while (frameIndex != 0) {
+      current match {
+        case ref @ FlatMap(fa, _, _) =>
+          if (bFirst ne null) {
+            if (bRest eq null) bRest = createCallStack()
+            bRest.push(bFirst)
+          }
+          bFirst = ref
+          current = fa
 
-          case Now(value) =>
-            unboxed = value.asInstanceOf[AnyRef]
+        case Now(value) =>
+          unboxed = value.asInstanceOf[AnyRef]
+          hasUnboxed = true
+
+        case Eval(thunk) =>
+          try {
+            unboxed = thunk().asInstanceOf[AnyRef]
             hasUnboxed = true
+            current = null
+          } catch {
+            case NonFatal(e) =>
+              current = Error(e)
+          }
 
-          case Eval(thunk) =>
-            try {
-              unboxed = thunk().asInstanceOf[AnyRef]
-              hasUnboxed = true
-              current = null
-            } catch {
-              case NonFatal(e) =>
-                current = Error(e)
-            }
+        case ref @ Map(fa, _, _) =>
+          if (bFirst ne null) {
+            if (bRest eq null) bRest = createCallStack()
+            bRest.push(bFirst)
+          }
+          bFirst = ref
+          current = fa
 
-          case ref @ Map(fa, _, _) =>
-            if (bFirst ne null) {
-              if (bRest eq null) bRest = createCallStack()
-              bRest.push(bFirst)
-            }
-            bFirst = ref
-            current = fa
+        case Suspend(thunk) =>
+          // Try/catch described as statement to prevent ObjectRef ;-)
+          try {
+            current = thunk()
+          }
+          catch {
+            case NonFatal(ex) => current = Error(ex)
+          }
 
-          case Suspend(thunk) =>
-            // Try/catch described as statement to prevent ObjectRef ;-)
-            try {
-              current = thunk()
-            }
-            catch {
-              case NonFatal(ex) => current = Error(ex)
-            }
-
-          case Error(error) =>
-            findErrorHandler(bFirst, bRest) match {
-              case null =>
-                return CancelableFuture.failed(error)
-              case bind =>
-                // Try/catch described as statement to prevent ObjectRef ;-)
-                try { current = bind(error) }
-                catch { case NonFatal(e) => current = Error(e) }
-                frameIndex = em.nextFrameIndex(frameIndex)
-                bFirst = null
-            }
-
-          case Async(_) =>
-            return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
-
-          case ref: MemoizeSuspend[_] =>
-            // Already processed?
-            ref.value match {
-              case Some(materialized) =>
-                materialized match {
-                  case Success(value) =>
-                    unboxed = value.asInstanceOf[AnyRef]
-                    hasUnboxed = true
-                    current = null
-                  case Failure(error) =>
-                    current = Error(error)
-                }
-              case None =>
-                return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
-            }
-        }
-
-        if (hasUnboxed) {
-          popNextBind(bFirst, bRest) match {
+        case Error(error) =>
+          findErrorHandler(bFirst, bRest) match {
             case null =>
-              return CancelableFuture.successful(unboxed.asInstanceOf[A])
+              return CancelableFuture.failed(error)
             case bind =>
               // Try/catch described as statement to prevent ObjectRef ;-)
-              try {
-                current = bind(unboxed)
-              }
-              catch {
-                case NonFatal(ex) => current = Error(ex)
-              }
+              try { current = bind(error) }
+              catch { case NonFatal(e) => current = Error(e) }
               frameIndex = em.nextFrameIndex(frameIndex)
-              hasUnboxed = false
-              unboxed = null
               bFirst = null
           }
-        }
-      } else {
-        // Force async boundary
-        return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = true)
+
+        case Async(_) =>
+          return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
+
+        case ref: MemoizeSuspend[_] =>
+          // Already processed?
+          ref.value match {
+            case Some(materialized) =>
+              materialized match {
+                case Success(value) =>
+                  unboxed = value.asInstanceOf[AnyRef]
+                  hasUnboxed = true
+                  current = null
+                case Failure(error) =>
+                  current = Error(error)
+              }
+            case None =>
+              return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
+          }
       }
-    } while (true)
-    // $COVERAGE-OFF$
-    null
-    // $COVERAGE-ON$
+
+      if (hasUnboxed) {
+        popNextBind(bFirst, bRest) match {
+          case null =>
+            return CancelableFuture.successful(unboxed.asInstanceOf[A])
+          case bind =>
+            // Try/catch described as statement to prevent ObjectRef ;-)
+            try { current = bind(unboxed) }
+            catch { case NonFatal(ex) => current = Error(ex) }
+            frameIndex = em.nextFrameIndex(frameIndex)
+            hasUnboxed = false
+            unboxed = null
+            bFirst = null
+        }
+      }
+    }
+    // frameIndex == 0, force async boundary
+    goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = true)
   }
 
   /** Called when we hit the first async boundary in
