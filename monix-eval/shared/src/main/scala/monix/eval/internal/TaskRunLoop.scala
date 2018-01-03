@@ -38,10 +38,6 @@ private[eval] object TaskRunLoop {
   final def frameStart(em: ExecutionModel): FrameIndex =
     em.nextFrameIndex(0)
 
-  /** Creates a new [[CallStack]] */
-  private def createCallStack(): CallStack =
-    ArrayStack(8)
-
   /** Internal utility, for forcing an asynchronous boundary in the
     * trampoline loop.
     */
@@ -83,9 +79,9 @@ private[eval] object TaskRunLoop {
     context: Context,
     cb: Callback[A],
     rcb: RestartCallback /* | Null */,
-    bFirst: Bind /* | Null */,
-    bRest: CallStack /* | Null */,
-    frameIndex: FrameIndex): Unit = {
+    bFirstInit: Bind /* | Null */,
+    bRestInit: CallStack /* | Null */,
+    frameIndexStart: FrameIndex): Unit = {
 
     def executeOnFinish(
       context: Context,
@@ -118,22 +114,19 @@ private[eval] object TaskRunLoop {
     val cba = cb.asInstanceOf[Callback[Any]]
     val em = context.executionModel
     var current = source.asInstanceOf[Task[Any]]
-    var bFirstRef = bFirst
-    var bRestRef = bRest
-    var currentIndex = frameIndex
+    var bFirst = bFirstInit
+    val bRest = if (bRestInit ne null) bRestInit else new ArrayStack[Bind]()
+    var frameIndex = frameIndexStart
     // Values from Now, Always and Once are unboxed in this var, for code reuse
     var hasUnboxed: Boolean = false
     var unboxed: AnyRef = null
 
-    while (currentIndex != 0) {
+    while (frameIndex != 0) {
       current.id match {
         case FRAME_ID =>
-          if (bFirstRef ne null) {
-            if (bRestRef eq null) bRestRef = createCallStack()
-            bRestRef.push(bFirstRef)
-          }
-          bFirstRef = current.asInstanceOf[Bind]
-          current = bFirstRef.source
+          if (bFirst ne null) bRest.push(bFirst)
+          bFirst = current.asInstanceOf[Bind]
+          current = bFirst.source
 
         case NOW_ID =>
           val ref = current.asInstanceOf[Now[AnyRef]]
@@ -142,78 +135,86 @@ private[eval] object TaskRunLoop {
 
         case EVAL_ID =>
           val ref = current.asInstanceOf[Eval[AnyRef]]
-          try {
-            unboxed = ref.thunk()
-            hasUnboxed = true
+          // Indirection to avoid ObjectRef & BoxedUnit
+          val value = try {
+            val ret = ref.thunk()
             current = null
-          } catch { case NonFatal(e) =>
-            current = Error(e)
+            hasUnboxed = true
+            ret
+          } catch {
+            case NonFatal(e) =>
+              current = new Error(e)
+              null
           }
+          unboxed = value
 
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
-          // Trying hard to avoid ObjectRef ;-)
+          // Indirection to avoid ObjectRef
           val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
           current = next
 
         case ERROR_ID =>
           val ref = current.asInstanceOf[Error[AnyRef]]
-          findErrorHandler(bFirstRef, bRestRef) match {
-            case null =>
-              cb.onError(ref.error)
-              return
-            case bind =>
-              // Try/catch described as statement, otherwise ObjectRef happens ;-)
-              try { current = bind(ref.error) }
-              catch { case NonFatal(e) => current = Error(e) }
-              currentIndex = em.nextFrameIndex(currentIndex)
-              bFirstRef = null
+          val bind = findErrorHandler(bFirst, bRest)
+          // Not pattern matching in order to avoid usage of "BoxedUnit"
+          if (bind ne null) {
+            bFirst = null
+            frameIndex = em.nextFrameIndex(frameIndex)
+            // Indirection to avoid ObjectRef
+            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            current = next
+          } else {
+            cb.onError(ref.error)
+            return
           }
 
         case ASYNC_ID =>
           val ref = current.asInstanceOf[Async[AnyRef]]
-          executeOnFinish(context, cba, rcb, bFirstRef, bRestRef, ref.register, currentIndex)
+          executeOnFinish(context, cba, rcb, bFirst, bRest, ref.register, frameIndex)
           return
 
         case MEMOIZE_ID =>
           val ref = current.asInstanceOf[MemoizeSuspend[AnyRef]]
-          // Already processed?
-          ref.value match {
+          // Usage as expression in order to avoid "BoxedUnit"
+          current = ref.value match {
             case Some(materialized) =>
               materialized match {
-                case Success(value) =>
-                  unboxed = value.asInstanceOf[AnyRef]
+                case Success(any) =>
+                  unboxed = any.asInstanceOf[AnyRef]
                   hasUnboxed = true
-                  current = null
+                  null
                 case Failure(error) =>
-                  current = Error(error)
+                  new Error(error)
               }
             case None =>
               val anyRef = ref.asInstanceOf[MemoizeSuspend[Any]]
-              val isSuccess = startMemoization(anyRef, context, cba, rcb, bFirstRef, bRestRef, currentIndex)
+              val isSuccess = startMemoization(anyRef, context, cba, rcb, bFirst, bRest, frameIndex)
               // If not isSuccess, a race condition happened and we must retry!
-              if (isSuccess) return
+              if (isSuccess) return else current
           }
       }
 
       if (hasUnboxed) {
-        popNextBind(bFirstRef, bRestRef) match {
-          case null =>
-            cba.onSuccess(unboxed)
-            return
-          case bind =>
-            // Try/catch described as statement, otherwise ObjectRef happens ;-)
-            try { current = bind(unboxed) }
-            catch { case NonFatal(ex) => current = Error(ex) }
-            currentIndex = em.nextFrameIndex(currentIndex)
-            hasUnboxed = false
-            unboxed = null
-            bFirstRef = null
+        val bind = popNextBind(bFirst, bRest)
+        // Not pattern matching in order to avoid usage of "BoxedUnit"
+        if (bind ne null) {
+          // Indirection to avoid ObjectRef
+          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          current = next
+          // No longer in unboxed state
+          hasUnboxed = false
+          bFirst = null
+          frameIndex = em.nextFrameIndex(frameIndex)
+          unboxed = null // GC purposes
+        } else {
+          cba.onSuccess(unboxed)
+          return
         }
       }
     }
     // frameIndex == 0, force async boundary
-    restartAsync(current, context, cba, rcb, bFirstRef, bRestRef)
+    restartAsync(current, context, cba, rcb, bFirst, bRest)
   }
 
   /** A run-loop that attempts to evaluate a `Task` without
@@ -230,21 +231,18 @@ private[eval] object TaskRunLoop {
 
     var current = source.asInstanceOf[Task[Any]]
     var bFirst: Bind = null
-    var bRest: CallStack = null
+    val bRest: CallStack = new ArrayStack[Bind]()
     // Values from Now, Always and Once are unboxed in this var, for code reuse
     var hasUnboxed: Boolean = false
     var unboxed: AnyRef = null
     // Keeps track of the current frame, used for forced async boundaries
     val em = scheduler.executionModel
-    var frameIndex = frameStart(em)
+    var currentIndex = frameStart(em)
 
-    while (frameIndex != 0) {
+    while (currentIndex != 0) {
       current.id match {
         case FRAME_ID =>
-          if (bFirst ne null) {
-            if (bRest eq null) bRest = createCallStack()
-            bRest.push(bFirst)
-          }
+          if (bFirst ne null) bRest.push(bFirst)
           bFirst = current.asInstanceOf[Bind]
           current = bFirst.source
 
@@ -255,76 +253,85 @@ private[eval] object TaskRunLoop {
 
         case EVAL_ID =>
           val ref = current.asInstanceOf[Eval[AnyRef]]
-          try {
-            unboxed = ref.thunk()
-            hasUnboxed = true
+          // Indirection to avoid ObjectRef & BoxedUnit
+          val value = try {
+            val ret = ref.thunk()
             current = null
-          } catch { case NonFatal(e) =>
-            current = Error(e)
+            hasUnboxed = true
+            ret
+          } catch {
+            case NonFatal(e) =>
+              current = new Error(e)
+              null
           }
+          unboxed = value
 
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
-          // Try/catch described as statement, otherwise ObjectRef happens ;-)
-          try { current = ref.thunk() }
-          catch { case NonFatal(ex) => current = Error(ex) }
+          // Indirection to avoid ObjectRef
+          val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
+          current = next
 
         case ERROR_ID =>
           val ref = current.asInstanceOf[Error[AnyRef]]
-          findErrorHandler(bFirst, bRest) match {
-            case null =>
-              cb.onError(ref.error)
-              return Cancelable.empty
-            case bind =>
-              // Try/catch described as statement, otherwise ObjectRef happens ;-)
-              try { current = bind(ref.error) }
-              catch { case NonFatal(e) => current = Error(e) }
-              frameIndex = em.nextFrameIndex(frameIndex)
-              bFirst = null
+          val bind = findErrorHandler(bFirst, bRest)
+          // Not pattern matching in order to avoid usage of "BoxedUnit"
+          if (bind ne null) {
+            bFirst = null
+            currentIndex = em.nextFrameIndex(currentIndex)
+            // Indirection to avoid ObjectRef
+            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            current = next
+          } else {
+            cb.onError(ref.error)
+            return Cancelable.empty
           }
 
         case ASYNC_ID =>
           return goAsync4LightCB(
             current, scheduler, opts,
             cb.asInstanceOf[Callback[Any]],
-            bFirst, bRest, frameIndex,
+            bFirst, bRest, currentIndex,
             forceAsync = false)
 
         case MEMOIZE_ID =>
           val ref = current.asInstanceOf[MemoizeSuspend[AnyRef]]
-          // Already processed?
-          ref.value match {
+          // Usage as expression in order to avoid "BoxedUnit"
+          current = ref.value match {
             case Some(materialized) =>
               materialized match {
-                case Success(value) =>
-                  unboxed = value.asInstanceOf[AnyRef]
+                case Success(any) =>
+                  unboxed = any.asInstanceOf[AnyRef]
                   hasUnboxed = true
-                  current = null
+                  null
                 case Failure(error) =>
-                  current = Error(error)
+                  new Error(error)
               }
             case None =>
+              // Not memoized yet, go async and do full loop
               return goAsync4LightCB(
                 current, scheduler, opts,
                 cb.asInstanceOf[Callback[Any]],
-                bFirst, bRest, frameIndex,
+                bFirst, bRest, currentIndex,
                 forceAsync = false)
           }
       }
 
       if (hasUnboxed) {
-        popNextBind(bFirst, bRest) match {
-          case null =>
-            cb.onSuccess(unboxed.asInstanceOf[A])
-            return Cancelable.empty
-          case bind =>
-            // Try/catch described as statement, otherwise ObjectRef happens ;-)
-            try { current = bind(unboxed) }
-            catch { case NonFatal(ex) => current = Error(ex) }
-            frameIndex = em.nextFrameIndex(frameIndex)
-            hasUnboxed = false
-            unboxed = null
-            bFirst = null
+        val bind = popNextBind(bFirst, bRest)
+        // Not pattern matching in order to avoid usage of "BoxedUnit"
+        if (bind ne null) {
+          // Indirection to avoid ObjectRef
+          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          current = next
+          // No longer in unboxed state
+          hasUnboxed = false
+          bFirst = null
+          currentIndex = em.nextFrameIndex(currentIndex)
+          unboxed = null // GC purposes
+        } else {
+          cb.onSuccess(unboxed.asInstanceOf[A])
+          return Cancelable.empty
         }
       }
     }
@@ -332,7 +339,7 @@ private[eval] object TaskRunLoop {
     goAsync4LightCB(
       current, scheduler, opts,
       cb.asInstanceOf[Callback[Any]],
-      bFirst, bRest, frameIndex,
+      bFirst, bRest, currentIndex,
       forceAsync = true)
   }
 
@@ -345,21 +352,18 @@ private[eval] object TaskRunLoop {
   def startFuture[A](source: Task[A], scheduler: Scheduler, opts: Task.Options): CancelableFuture[A] = {
     var current = source.asInstanceOf[Task[Any]]
     var bFirst: Bind = null
-    var bRest: CallStack = null
+    val bRest: CallStack = new ArrayStack[Bind]()
     // Values from Now, Always and Once are unboxed in this var, for code reuse
     var hasUnboxed: Boolean = false
     var unboxed: AnyRef = null
     // Keeps track of the current frame, used for forced async boundaries
     val em = scheduler.executionModel
-    var frameIndex = frameStart(em)
+    var currentIndex = frameStart(em)
 
-    while (frameIndex != 0) {
+    while (currentIndex != 0) {
       current.id match {
         case FRAME_ID =>
-          if (bFirst ne null) {
-            if (bRest eq null) bRest = createCallStack()
-            bRest.push(bFirst)
-          }
+          if (bFirst ne null) bRest.push(bFirst)
           bFirst = current.asInstanceOf[Bind]
           current = bFirst.source
 
@@ -370,71 +374,80 @@ private[eval] object TaskRunLoop {
 
         case EVAL_ID =>
           val ref = current.asInstanceOf[Eval[AnyRef]]
-          try {
-            unboxed = ref.thunk()
-            hasUnboxed = true
+          // Indirection to avoid ObjectRef & BoxedUnit
+          val value = try {
+            val ret = ref.thunk()
             current = null
-          } catch { case NonFatal(e) =>
-            current = Error(e)
+            hasUnboxed = true
+            ret
+          } catch {
+            case NonFatal(e) =>
+              current = new Error(e)
+              null
           }
+          unboxed = value
 
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
-          // Try/catch described as statement, otherwise ObjectRef happens ;-)
-          try { current = ref.thunk() }
-          catch { case NonFatal(ex) => current = Error(ex) }
+          // Indirection to avoid ObjectRef
+          val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
+          current = next
 
         case ERROR_ID =>
           val ref = current.asInstanceOf[Error[AnyRef]]
-          findErrorHandler(bFirst, bRest) match {
-            case null =>
-              return CancelableFuture.failed(ref.error)
-            case bind =>
-              // Try/catch described as statement to prevent ObjectRef ;-)
-              try { current = bind(ref.error) }
-              catch { case NonFatal(e) => current = Error(e) }
-              frameIndex = em.nextFrameIndex(frameIndex)
-              bFirst = null
+          val bind = findErrorHandler(bFirst, bRest)
+          // Not pattern matching in order to avoid usage of "BoxedUnit"
+          if (bind ne null) {
+            bFirst = null
+            currentIndex = em.nextFrameIndex(currentIndex)
+            // Indirection to avoid ObjectRef
+            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            current = next
+          } else {
+            return CancelableFuture.failed(ref.error)
           }
 
         case ASYNC_ID =>
-          return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
+          return goAsync4Future(current, scheduler, opts, bFirst, bRest, currentIndex, forceAsync = false)
 
         case MEMOIZE_ID =>
           val ref = current.asInstanceOf[MemoizeSuspend[AnyRef]]
-          // Already processed?
-          ref.value match {
+          // Usage as expression in order to avoid "BoxedUnit"
+          current = ref.value match {
             case Some(materialized) =>
               materialized match {
-                case Success(value) =>
-                  unboxed = value.asInstanceOf[AnyRef]
+                case Success(any) =>
+                  unboxed = any.asInstanceOf[AnyRef]
                   hasUnboxed = true
-                  current = null
+                  null
                 case Failure(error) =>
-                  current = Error(error)
+                  new Error(error)
               }
             case None =>
-              return goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = false)
+              // Not memoized yet, go async and do full loop
+              return goAsync4Future(current, scheduler, opts, bFirst, bRest, currentIndex, forceAsync = false)
           }
       }
 
       if (hasUnboxed) {
-        popNextBind(bFirst, bRest) match {
-          case null =>
-            return CancelableFuture.successful(unboxed.asInstanceOf[A])
-          case bind =>
-            // Try/catch described as statement to prevent ObjectRef ;-)
-            try { current = bind(unboxed) }
-            catch { case NonFatal(ex) => current = Error(ex) }
-            frameIndex = em.nextFrameIndex(frameIndex)
-            hasUnboxed = false
-            unboxed = null
-            bFirst = null
+        val bind = popNextBind(bFirst, bRest)
+        // Not pattern matching in order to avoid usage of "BoxedUnit"
+        if (bind ne null) {
+          // Indirection to avoid ObjectRef
+          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          current = next
+          // No longer in unboxed state
+          hasUnboxed = false
+          bFirst = null
+          currentIndex = em.nextFrameIndex(currentIndex)
+          unboxed = null // GC purposes
+        } else {
+          return CancelableFuture.successful(unboxed.asInstanceOf[A])
         }
       }
     }
     // frameIndex == 0, force async boundary
-    goAsync4Future(current, scheduler, opts, bFirst, bRest, frameIndex, forceAsync = true)
+    goAsync4Future(current, scheduler, opts, bFirst, bRest, currentIndex, forceAsync = true)
   }
 
   /** Called when we hit the first async boundary in
@@ -500,14 +513,14 @@ private[eval] object TaskRunLoop {
       // Should we cache everything, error results as well,
       // or only successful results?
       if (self.cacheErrors || value.isSuccess) {
+        self.thunk = null // GC purposes
         state.getAndSet(value) match {
           case (p: Promise[_], _) =>
             p.asInstanceOf[Promise[A]].complete(value)
+            return // avoids BoxedUnit
           case _ =>
-            () // do nothing
+            return // avoids BoxedUnit
         }
-        // GC purposes
-        self.thunk = null
       } else {
         // Error happened and we are not caching errors!
         val current = state.get
@@ -517,8 +530,9 @@ private[eval] object TaskRunLoop {
           current match {
             case (p: Promise[_], _) =>
               p.asInstanceOf[Promise[A]].complete(value)
+              return // avoids BoxedUnit
             case _ =>
-              () // do nothing
+              return // avoids BoxedUnit
           }
         else
           cacheValue(state, value) // retry
@@ -536,6 +550,7 @@ private[eval] object TaskRunLoop {
           // $COVERAGE-ON$
         } else {
           val underlying = try self.thunk() catch { case NonFatal(ex) => Error(ex) }
+
           val callback = new Callback[A] {
             def onError(ex: Throwable): Unit = {
               cacheValue(self.state, Failure(ex))
@@ -574,30 +589,30 @@ private[eval] object TaskRunLoop {
     }
   }
 
-  private def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Task[Any] = {
+  def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Task[Any] = {
     var cursor = bFirst
     do {
-      cursor match {
+      cursor = cursor match {
         case FlatMap(_, _, g) if g ne null =>
           return g
         case _ =>
-          cursor = if (bRest ne null) bRest.pop() else null
+          bRest.pop()
       }
     } while (cursor ne null)
     // None found
     null
   }
 
-  private def popNextBind(bFirst: Bind, bRest: CallStack): Any => Task[Any] = {
+  def popNextBind(bFirst: Bind, bRest: CallStack): Any => Task[Any] = {
     var cursor = bFirst
     do {
-      cursor match {
+      cursor = cursor match {
         case FlatMap(_, f, _) if f ne null =>
           return f
         case ref @ Map(_, _, _) =>
           return ref
         case _ =>
-          cursor = if (bRest ne null) bRest.pop() else null
+          bRest.pop()
       }
     } while (cursor ne null)
     // None found

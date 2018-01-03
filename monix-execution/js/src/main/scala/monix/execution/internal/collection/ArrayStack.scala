@@ -23,11 +23,11 @@ import scala.scalajs.js
 /** Light and fast array-based stack implementation,
   * for internal usage.
   */
-private[collection] final class ArrayStackImpl[A] private (
+private[monix] final class ArrayStack[A] private (
   arrayRef: js.Array[AnyRef],
   private[this] val minCapacity: Int,
   private[this] var index: Int)
-  extends ArrayStack[A] {
+  extends Serializable with Cloneable {
 
   private[this] val array =
     if (arrayRef ne null) arrayRef
@@ -36,13 +36,10 @@ private[collection] final class ArrayStackImpl[A] private (
   private[this] var capacity = array.length
   private[this] var popAtCapacity = capacity >> 2
 
+  /** Default constructor. */
+  def this() = this(null, 8, 0)
   def this(minCapacity: Int) =
     this(null, math.nextPowerOf2(minCapacity), 0)
-
-  override def clone(): ArrayStack[A] = {
-    val copy = array.jsSlice(0, array.length)
-    new ArrayStackImpl[A](copy, minCapacity, index)
-  }
 
   def size: Int = index
   def currentCapacity: Int = capacity
@@ -73,5 +70,10 @@ private[collection] final class ArrayStackImpl[A] private (
     }
 
     result.asInstanceOf[A]
+  }
+
+  override def clone(): ArrayStack[A] = {
+    val copy = array.jsSlice(0, array.length)
+    new ArrayStack[A](copy, minCapacity, index)
   }
 }

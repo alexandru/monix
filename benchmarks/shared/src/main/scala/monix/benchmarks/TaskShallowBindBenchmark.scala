@@ -52,7 +52,7 @@ class TaskShallowBindBenchmark {
       if (i < size) Task.pure(i + 1).flatMap(loop)
       else Task.pure(i)
 
-    val task = Task.pure(0).flatMap(loop)
+    val task = Task.pure(0).flatMap(loop).map(_ * 10)
     Await.result(task.runAsync, Duration.Inf)
   }
 
@@ -62,7 +62,7 @@ class TaskShallowBindBenchmark {
       if (i < size) Task.eval(i + 1).flatMap(loop)
       else Task.eval(i)
 
-    val task = Task.eval(0).flatMap(loop)
+    val task = Task.eval(0).flatMap(loop).map(_ * 10)
     Await.result(task.runAsync, Duration.Inf)
   }
 
@@ -72,7 +72,7 @@ class TaskShallowBindBenchmark {
       if (i < size) Task(i + 1).flatMap(loop)
       else Task(i)
 
-    val task = Task(0).flatMap(loop)
+    val task = Task(0).flatMap(loop).map(_ * 10)
     Await.result(task.runAsync, Duration.Inf)
   }
 }

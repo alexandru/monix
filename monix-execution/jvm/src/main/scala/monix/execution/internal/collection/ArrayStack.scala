@@ -19,11 +19,11 @@ package monix.execution.internal.collection
 
 import monix.execution.internal.math
 
-private[monix] final class ArrayStackImpl[A] private (
+private[monix] final class ArrayStack[A] private (
   arrayRef: Array[AnyRef],
   private[this] val minCapacity: Int,
   private[this] var index: Int)
-  extends ArrayStack[A] {
+  extends Serializable with Cloneable {
 
   private[this] var array =
     if (arrayRef ne null) arrayRef
@@ -32,6 +32,8 @@ private[monix] final class ArrayStackImpl[A] private (
   private[this] var capacity = array.length
   private[this] var popAtCapacity = capacity >> 2
 
+  /** Default constructor. */
+  def this() = this(null, 8, 0)
   def this(minCapacity: Int) =
     this(null, math.nextPowerOf2(minCapacity), 0)
 
@@ -72,5 +74,11 @@ private[monix] final class ArrayStackImpl[A] private (
       array = copy
     }
     result.asInstanceOf[A]
+  }
+
+  override def clone(): ArrayStack[A] = {
+    val copy = new Array[AnyRef](array.length)
+    System.arraycopy(array, 0, copy, 0, index)
+    new ArrayStack[A](copy, minCapacity, index)
   }
 }
