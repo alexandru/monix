@@ -116,14 +116,14 @@ private[observers] final class DropNewBufferedSubscriber[A] private
             ack
         }
       } catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           signalError(ex)
           Stop
       }
 
     private final def signalComplete(): Unit =
       try out.onComplete() catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           scheduler.reportFailure(ex)
       }
 
@@ -245,7 +245,7 @@ private[observers] final class DropNewBufferedSubscriber[A] private
             if (remaining <= 0) return
           }
         } catch {
-          case NonFatal(ex) =>
+          case ex if NonFatal(ex) =>
             if (streamErrors) {
               // ending loop
               downstreamIsComplete = true

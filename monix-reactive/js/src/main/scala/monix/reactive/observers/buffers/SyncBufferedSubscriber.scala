@@ -62,7 +62,7 @@ private[observers] final class SyncBufferedSubscriber[-A] private
         Continue
       }
       catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           onError(ex)
           Stop
       }
@@ -114,7 +114,7 @@ private[observers] final class SyncBufferedSubscriber[-A] private
             ack
         }
       } catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           downstreamSignalComplete(ex)
           Stop
       }
@@ -221,7 +221,7 @@ private[observers] final class SyncBufferedSubscriber[-A] private
             return
           }
         } catch {
-          case NonFatal(ex) =>
+          case ex if NonFatal(ex) =>
             if (streamErrors) {
               // ending loop
               downstreamSignalComplete(ex)

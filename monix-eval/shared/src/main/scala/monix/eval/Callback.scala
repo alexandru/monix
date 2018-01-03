@@ -150,7 +150,7 @@ object Callback {
       if (isActive) {
         isActive = false
         try underlying.onSuccess(value) catch {
-          case NonFatal(ex) =>
+          case ex if NonFatal(ex) =>
             r.reportFailure(ex)
         }
       }

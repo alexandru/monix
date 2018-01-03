@@ -142,7 +142,7 @@ private[eval] object TaskRunLoop {
             hasUnboxed = true
             ret
           } catch {
-            case NonFatal(e) =>
+            case e if NonFatal(e) =>
               current = new Error(e)
               null
           }
@@ -151,7 +151,7 @@ private[eval] object TaskRunLoop {
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
           // Indirection to avoid ObjectRef
-          val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
+          val next = try ref.thunk() catch { case e if NonFatal(e) => new Error(e) }
           current = next
 
         case ERROR_ID =>
@@ -162,7 +162,7 @@ private[eval] object TaskRunLoop {
             bFirst = null
             frameIndex = em.nextFrameIndex(frameIndex)
             // Indirection to avoid ObjectRef
-            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            val next = try bind(ref.error) catch { case e if NonFatal(e) => new Error(e) }
             current = next
           } else {
             cb.onError(ref.error)
@@ -200,7 +200,7 @@ private[eval] object TaskRunLoop {
         // Not pattern matching in order to avoid usage of "BoxedUnit"
         if (bind ne null) {
           // Indirection to avoid ObjectRef
-          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          val next = try bind(unboxed) catch { case e if NonFatal(e) => new Error(e) }
           current = next
           // No longer in unboxed state
           hasUnboxed = false
@@ -260,7 +260,7 @@ private[eval] object TaskRunLoop {
             hasUnboxed = true
             ret
           } catch {
-            case NonFatal(e) =>
+            case e if NonFatal(e) =>
               current = new Error(e)
               null
           }
@@ -269,7 +269,7 @@ private[eval] object TaskRunLoop {
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
           // Indirection to avoid ObjectRef
-          val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
+          val next = try ref.thunk() catch { case e if NonFatal(e) => new Error(e) }
           current = next
 
         case ERROR_ID =>
@@ -280,7 +280,7 @@ private[eval] object TaskRunLoop {
             bFirst = null
             currentIndex = em.nextFrameIndex(currentIndex)
             // Indirection to avoid ObjectRef
-            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            val next = try bind(ref.error) catch { case e if NonFatal(e) => new Error(e) }
             current = next
           } else {
             cb.onError(ref.error)
@@ -297,15 +297,14 @@ private[eval] object TaskRunLoop {
         case MEMOIZE_ID =>
           val ref = current.asInstanceOf[MemoizeSuspend[AnyRef]]
           // Usage as expression in order to avoid "BoxedUnit"
-          current = ref.value match {
+          ref.value match {
             case Some(materialized) =>
               materialized match {
                 case Success(any) =>
                   unboxed = any.asInstanceOf[AnyRef]
                   hasUnboxed = true
-                  null
                 case Failure(error) =>
-                  new Error(error)
+                  current = new Error(error)
               }
             case None =>
               // Not memoized yet, go async and do full loop
@@ -322,7 +321,7 @@ private[eval] object TaskRunLoop {
         // Not pattern matching in order to avoid usage of "BoxedUnit"
         if (bind ne null) {
           // Indirection to avoid ObjectRef
-          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          val next = try bind(unboxed) catch { case e if NonFatal(e) => new Error(e) }
           current = next
           // No longer in unboxed state
           hasUnboxed = false
@@ -381,7 +380,7 @@ private[eval] object TaskRunLoop {
             hasUnboxed = true
             ret
           } catch {
-            case NonFatal(e) =>
+            case e if NonFatal(e) =>
               current = new Error(e)
               null
           }
@@ -390,7 +389,7 @@ private[eval] object TaskRunLoop {
         case SUSPEND_ID =>
           val ref = current.asInstanceOf[Suspend[AnyRef]]
           // Indirection to avoid ObjectRef
-          val next = try ref.thunk() catch { case NonFatal(e) => new Error(e) }
+          val next = try ref.thunk() catch { case e if NonFatal(e) => new Error(e) }
           current = next
 
         case ERROR_ID =>
@@ -401,7 +400,7 @@ private[eval] object TaskRunLoop {
             bFirst = null
             currentIndex = em.nextFrameIndex(currentIndex)
             // Indirection to avoid ObjectRef
-            val next = try bind(ref.error) catch { case NonFatal(e) => new Error(e) }
+            val next = try bind(ref.error) catch { case e if NonFatal(e) => new Error(e) }
             current = next
           } else {
             return CancelableFuture.failed(ref.error)
@@ -413,15 +412,14 @@ private[eval] object TaskRunLoop {
         case MEMOIZE_ID =>
           val ref = current.asInstanceOf[MemoizeSuspend[AnyRef]]
           // Usage as expression in order to avoid "BoxedUnit"
-          current = ref.value match {
+          ref.value match {
             case Some(materialized) =>
               materialized match {
                 case Success(any) =>
                   unboxed = any.asInstanceOf[AnyRef]
                   hasUnboxed = true
-                  null
                 case Failure(error) =>
-                  new Error(error)
+                  current = new Error(error)
               }
             case None =>
               // Not memoized yet, go async and do full loop
@@ -434,7 +432,7 @@ private[eval] object TaskRunLoop {
         // Not pattern matching in order to avoid usage of "BoxedUnit"
         if (bind ne null) {
           // Indirection to avoid ObjectRef
-          val next = try bind(unboxed) catch { case NonFatal(e) => new Error(e) }
+          val next = try bind(unboxed) catch { case e if NonFatal(e) => new Error(e) }
           current = next
           // No longer in unboxed state
           hasUnboxed = false
@@ -549,16 +547,16 @@ private[eval] object TaskRunLoop {
           startMemoization(self, context, cb, rcb, bindCurrent, bindRest, nextFrame) // retry
           // $COVERAGE-ON$
         } else {
-          val underlying = try self.thunk() catch { case NonFatal(ex) => Error(ex) }
+          val underlying = try self.thunk() catch { case e if NonFatal(e) => new Error(e) }
 
           val callback = new Callback[A] {
             def onError(ex: Throwable): Unit = {
               cacheValue(self.state, Failure(ex))
-              restartAsync(Error(ex), context, cb, rcb, bindCurrent, bindRest)
+              restartAsync(new Error(ex), context, cb, rcb, bindCurrent, bindRest)
             }
             def onSuccess(value: A): Unit = {
               cacheValue(self.state, Success(value))
-              restartAsync(Now(value), context, cb, rcb, bindCurrent, bindRest)
+              restartAsync(new Now(value), context, cb, rcb, bindCurrent, bindRest)
             }
           }
 
@@ -592,12 +590,14 @@ private[eval] object TaskRunLoop {
   def findErrorHandler(bFirst: Bind, bRest: CallStack): Throwable => Task[Any] = {
     var cursor = bFirst
     do {
-      cursor = cursor match {
+      val next = cursor match {
         case FlatMap(_, _, g) if g ne null =>
           return g
         case _ =>
           bRest.pop()
       }
+      // Indirection to avoid ObjectRef and liftedTree$
+      cursor = next
     } while (cursor ne null)
     // None found
     null
@@ -606,7 +606,7 @@ private[eval] object TaskRunLoop {
   def popNextBind(bFirst: Bind, bRest: CallStack): Any => Task[Any] = {
     var cursor = bFirst
     do {
-      cursor = cursor match {
+      val next = cursor match {
         case FlatMap(_, f, _) if f ne null =>
           return f
         case ref @ Map(_, _, _) =>
@@ -614,6 +614,8 @@ private[eval] object TaskRunLoop {
         case _ =>
           bRest.pop()
       }
+      // Indirection to avoid ObjectRef and liftedTree$
+      cursor = next
     } while (cursor ne null)
     // None found
     null
@@ -647,7 +649,7 @@ private[eval] object TaskRunLoop {
       if (canCall) {
         canCall = false
         Local.bind(savedLocals) {
-          startFull(Now(value), _context, _callback, this, bFirst, bRest, runLoopIndex())
+          startFull(new Now(value), _context, _callback, this, bFirst, bRest, runLoopIndex())
         }
       }
 
@@ -655,7 +657,7 @@ private[eval] object TaskRunLoop {
       if (canCall) {
         canCall = false
         Local.bind(savedLocals) {
-          startFull(Error(ex), _context, _callback, this, bFirst, bRest, runLoopIndex())
+          startFull(new Error(ex), _context, _callback, this, bFirst, bRest, runLoopIndex())
         }
       } else {
         // $COVERAGE-OFF$

@@ -52,7 +52,7 @@ private[reactive] final class EvalOnceObservable[A](a: => A)
     if (hasResult) signalResult(subscriber, result, errorThrown) else
       synchronized {
         if (hasResult) signalResult(subscriber, result, errorThrown) else {
-          try result = a catch { case NonFatal(ex) => errorThrown = ex }
+          try result = a catch { case ex if NonFatal(ex) => errorThrown = ex }
           hasResult = true
           signalResult(subscriber, result, errorThrown)
         }

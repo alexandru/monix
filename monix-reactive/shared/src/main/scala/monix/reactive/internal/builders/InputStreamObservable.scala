@@ -117,7 +117,7 @@ private[reactive] final class InputStreamObservable(
         Stop
       }
     } catch {
-      case NonFatal(ex) =>
+      case ex if NonFatal(ex) =>
         errorThrown = ex
     }
 
@@ -150,7 +150,7 @@ private[reactive] final class InputStreamObservable(
 
   private def triggerCancel(s: UncaughtExceptionReporter): Unit =
     try blocking(in.close()) catch {
-      case NonFatal(ex) =>
+      case ex if NonFatal(ex) =>
         s.reportFailure(ex)
     }
 }

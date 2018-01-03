@@ -117,7 +117,7 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
             ack
         }
       } catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           downstreamSignalComplete(ex)
           Stop
       }
@@ -217,7 +217,7 @@ private[observers] abstract class AbstractBackPressuredBufferedSubscriber[A,R]
         }
       }
       catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           if (streamErrors) downstreamSignalComplete(ex)
           else scheduler.reportFailure(ex)
           lastIterationAck = Stop

@@ -229,7 +229,7 @@ final class LoadBalanceConsumer[-In, R]
             case Failure(ex) =>
               interruptAll(ex)
           } catch {
-            case NonFatal(ex) =>
+            case ex if NonFatal(ex) =>
               interruptAll(ex)
           }
         }

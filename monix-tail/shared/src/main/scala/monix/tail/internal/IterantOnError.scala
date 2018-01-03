@@ -66,7 +66,7 @@ private[tail] object IterantOnError {
             else
               Suspend(next, stop)
           } catch {
-            case NonFatal(e) =>
+            case e if NonFatal(e) =>
               sendError(stop, e)
           }
 
@@ -74,7 +74,7 @@ private[tail] object IterantOnError {
           try {
             loop(NextCursor(batch.cursor(), rest, stop))
           } catch {
-            case NonFatal(e) =>
+            case e if NonFatal(e) =>
               sendError(stop, e)
           }
 
@@ -85,7 +85,7 @@ private[tail] object IterantOnError {
         case Halt(Some(e)) =>
           f(e)
       } catch {
-        case NonFatal(e) =>
+        case e if NonFatal(e) =>
           try f(e) catch { case NonFatal(err) => Halt(Some(err)) }
       }
 

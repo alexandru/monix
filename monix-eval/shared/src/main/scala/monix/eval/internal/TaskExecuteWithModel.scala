@@ -47,7 +47,7 @@ private[eval] object TaskExecuteWithModel {
         TaskRunLoop.startFull[A](self, context2, cb, null, null, null, nextIndex)
       }
       catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           if (streamErrors) cb.onError(ex)
           else context.scheduler.reportFailure(ex)
       }

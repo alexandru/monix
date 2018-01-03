@@ -79,7 +79,7 @@ private[observers] abstract class AbstractSimpleBufferedSubscriber[A] protected
         }
       }
       catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           onError(ex)
           Stop
       }
@@ -140,14 +140,14 @@ private[observers] abstract class AbstractSimpleBufferedSubscriber[A] protected
             ack
         }
       } catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           signalError(ex)
           Stop
       }
 
     private final def signalComplete(): Unit =
       try out.onComplete() catch {
-        case NonFatal(ex) =>
+        case ex if NonFatal(ex) =>
           scheduler.reportFailure(ex)
       }
 
