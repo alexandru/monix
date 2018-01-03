@@ -122,6 +122,10 @@ object ArrayStackSuite extends SimpleTestSuite {
     assertEquals(cloned.currentCapacity, 256)
     assertEquals(cloned.size, 256)
     for (i <- 255.to(0, -1)) assertEquals(cloned.pop(), i)
+
+    assertEquals(cloned.minimumCapacity, 16)
+    assertEquals(cloned.currentCapacity, 16)
+    assertEquals(cloned.size, 0)
   }
 
   test("ArrayStack grows and shrinks") {
@@ -146,5 +150,11 @@ object ArrayStackSuite extends SimpleTestSuite {
     assertEquals(sum, count * (count + 1) / 2)
     assertEquals(stack.currentCapacity, 8)
     assertEquals(stack.minimumCapacity, 8)
+  }
+
+  test("ArrayStack adjusts the minCapacity") {
+    val stack = ArrayStack[Int](10)
+    assertEquals(stack.minimumCapacity, 16)
+    assertEquals(stack.currentCapacity, 16)
   }
 }

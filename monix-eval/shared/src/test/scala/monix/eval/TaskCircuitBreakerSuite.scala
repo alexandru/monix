@@ -62,8 +62,8 @@ object TaskCircuitBreakerSuite extends BaseTestSuite {
 
     def loop(n: Int, acc: Int): Task[Int] = {
       if (n > 0)
-        circuitBreaker.protect(Task(acc+1))
-          .flatMap(s => loop(n-1, s))
+        circuitBreaker.protect(Task(acc + 1))
+          .flatMap(s => loop(n - 1, s))
       else
         Task.now(acc)
     }

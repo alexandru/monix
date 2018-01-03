@@ -27,7 +27,7 @@ private[eval] object TaskExecuteWithOptions {
     */
   def apply[A](self: Task[A], f: Options => Options): Task[A] =
     Task.unsafeCreate { (context, cb) =>
-      implicit val s = context.scheduler
+      implicit val ec = context.scheduler
       var streamErrors = true
       try {
         val context2 = context.copy(options = f(context.options))

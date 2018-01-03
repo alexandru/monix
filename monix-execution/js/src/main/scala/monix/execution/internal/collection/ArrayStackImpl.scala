@@ -24,20 +24,24 @@ import scala.scalajs.js
   * for internal usage.
   */
 private[collection] final class ArrayStackImpl[A] private (
+  arrayRef: js.Array[AnyRef],
   private[this] val minCapacity: Int,
-  private[this] var array: js.Array[AnyRef],
   private[this] var index: Int)
   extends ArrayStack[A] {
 
+  private[this] val array =
+    if (arrayRef ne null) arrayRef
+    else new js.Array[AnyRef](minCapacity)
+
   private[this] var capacity = array.length
-  private[this] val popCapacityThreshold = minCapacity << 1 // * 2
+  private[this] var popAtCapacity = capacity >> 2
 
   def this(minCapacity: Int) =
-    this(minCapacity, new js.Array[AnyRef](math.nextPowerOf2(minCapacity)), 0)
+    this(null, math.nextPowerOf2(minCapacity), 0)
 
   override def clone(): ArrayStack[A] = {
     val copy = array.jsSlice(0, array.length)
-    new ArrayStackImpl[A](minCapacity, copy, index)
+    new ArrayStackImpl[A](copy, minCapacity, index)
   }
 
   def size: Int = index
@@ -47,11 +51,11 @@ private[collection] final class ArrayStackImpl[A] private (
 
   def push(a: A): Unit = {
     // If over capacity, we must double the array size!
-    if (index >= capacity) {
-      capacity = capacity * 2
+    if (index == capacity) {
+      capacity = capacity << 1 // * 2
+      popAtCapacity = capacity >> 2 // div 4
       array.length = capacity
     }
-
     array(index) = a.asInstanceOf[AnyRef]
     index += 1
   }
@@ -61,9 +65,10 @@ private[collection] final class ArrayStackImpl[A] private (
     index -= 1
     val result = array(index)
 
-    // Shrinks array, but it's conservative
-    if (capacity >= popCapacityThreshold && index <= (capacity >> 2)) {
+    // Shrinks array if only a quarter of it is full
+    if (index == popAtCapacity && capacity > minCapacity) {
       capacity = capacity >> 1
+      popAtCapacity = capacity >> 2
       array.length = capacity
     }
 

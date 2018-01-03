@@ -568,5 +568,4 @@ object TaskMemoizeSuite extends BaseTestSuite {
     assertEquals(p2.future.value, Some(Failure(dummy)))
     assertEquals(effect, 1)
   }
-
 }

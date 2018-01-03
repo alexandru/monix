@@ -20,22 +20,20 @@ package monix.execution.internal.collection
 import monix.execution.internal.math
 
 private[monix] final class ArrayStackImpl[A] private (
+  arrayRef: Array[AnyRef],
   private[this] val minCapacity: Int,
-  private[this] var array: Array[AnyRef],
   private[this] var index: Int)
   extends ArrayStack[A] {
 
+  private[this] var array =
+    if (arrayRef ne null) arrayRef
+    else new Array[AnyRef](minCapacity)
+
   private[this] var capacity = array.length
-  private[this] val popCapacityThreshold = minCapacity << 1 // * 2
+  private[this] var popAtCapacity = capacity >> 2
 
   def this(minCapacity: Int) =
-    this(minCapacity, new Array[AnyRef](math.nextPowerOf2(minCapacity)), 0)
-
-  override def clone(): ArrayStack[A] = {
-    val copy = new Array[AnyRef](array.length)
-    System.arraycopy(array, 0, copy, 0, index)
-    new ArrayStackImpl[A](minCapacity, copy, index)
-  }
+    this(null, math.nextPowerOf2(minCapacity), 0)
 
   def size: Int = index
   def currentCapacity: Int = capacity
@@ -44,12 +42,13 @@ private[monix] final class ArrayStackImpl[A] private (
 
   def push(a: A): Unit = {
     // If over capacity, we must double the array size!
-    if (index >= capacity) {
+    if (index == capacity) {
       val newCapacity = capacity << 1 // * 2
       val copy = new Array[AnyRef](newCapacity)
       System.arraycopy(array, 0, copy, 0, index)
       // Mutating internal state
       capacity = newCapacity
+      popAtCapacity = capacity >> 2
       array = copy
     }
 
@@ -62,12 +61,14 @@ private[monix] final class ArrayStackImpl[A] private (
     index -= 1
     val result = array(index)
 
-    if (capacity >= popCapacityThreshold && index <= (capacity >> 2)) {
+    // Shrinks array if only a quarter of it is full
+    if (index == popAtCapacity && capacity != minCapacity) {
       val newCapacity = capacity >> 1
       val copy = new Array[AnyRef](newCapacity)
       System.arraycopy(array, 0, copy, 0, index)
       // Mutating internal state
       capacity = newCapacity
+      popAtCapacity = capacity >> 2
       array = copy
     }
     result.asInstanceOf[A]
