@@ -15,14 +15,19 @@
  * limitations under the License.
  */
 
-package monix.execution.misc
+package monix.execution.internal
 
-private[execution] object compat {
-  type Context = scala.reflect.macros.whitebox.Context
+import scala.concurrent.Future
+import scala.concurrent.duration.Duration
 
-  def freshTermName[C <: Context](c: C)(s: String) =
-    c.universe.TermName(c.freshName(s))
-
-  def setOrig[C <: Context](c: C)(tt: c.universe.TypeTree, t: c.Tree) =
-    c.universe.internal.setOriginal(tt, t)
+private[execution] object BlockingOps {
+  /** Should block for the result of a Future, however this operation
+    * is not supported on top of JavaScript, so if `Future` isn't
+    * completed yet, then we throw an exception.
+    */
+  def awaitForFuture[A](fa: Future[A], limit: Duration): Unit =
+    if (!fa.isCompleted) {
+      throw new UnsupportedOperationException(
+        "cannot synchronously await result on JavaScript")
+    }
 }

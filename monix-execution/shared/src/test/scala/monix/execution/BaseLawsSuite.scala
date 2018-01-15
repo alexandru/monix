@@ -72,11 +72,32 @@ trait ArbitraryInstances extends ArbitraryInstancesBase {
   implicit def isEqListToProp[A](list: List[IsEq[A]])(implicit A: Eq[A]): Prop =
     Prop(list.forall(isEq => A.eqv(isEq.lhs, isEq.rhs)))
 
+  implicit def equalityFastFuture[A](implicit A: Eq[A], ec: TestScheduler): Eq[FastFuture[A]] =
+    new Eq[FastFuture[A]] {
+      val inst = equalityFuture[A]
+      def eqv(x: FastFuture[A], y: FastFuture[A]) =
+        inst.eqv(x, y)
+    }
+
   implicit def equalityCancelableFuture[A](implicit A: Eq[A], ec: TestScheduler): Eq[CancelableFuture[A]] =
     new Eq[CancelableFuture[A]] {
       val inst = equalityFuture[A]
       def eqv(x: CancelableFuture[A], y: CancelableFuture[A]) =
         inst.eqv(x, y)
+    }
+
+  implicit def arbitraryFastFuture[A]
+    (implicit A: Arbitrary[A], ec: Scheduler): Arbitrary[FastFuture[A]] =
+    Arbitrary {
+      for {
+        a <- A.arbitrary
+        future <- Gen.oneOf(
+          FastFuture.pure(a),
+          FastFuture.raiseError(DummyException(a.toString)),
+          FastFuture.async[A](cb => cb(Success(a))),
+          FastFuture.async[A](cb => cb(Failure(DummyException(a.toString)))),
+          FastFuture.pure(a).flatMap(FastFuture.pure))
+      } yield future
     }
 
   implicit def arbitraryCancelableFuture[A]
@@ -100,6 +121,8 @@ trait ArbitraryInstances extends ArbitraryInstancesBase {
     }
 
   implicit def cogenForCancelableFuture[A]: Cogen[CancelableFuture[A]] =
+    Cogen[Unit].contramap(_ => ())
+  implicit def cogenForFastFuture[A]: Cogen[FastFuture[A]] =
     Cogen[Unit].contramap(_ => ())
 }
 
