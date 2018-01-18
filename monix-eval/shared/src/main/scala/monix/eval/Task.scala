@@ -1917,8 +1917,8 @@ object Task extends TaskInstancesLevel1 {
     fa3: Task[A3],
     fa4: Task[A4],
     fa5: Task[A5],
-    fa6: Task[A6])(f: (A1, A2, A3, A4, A5, A6) => R): Task[R] = {
-
+    fa6: Task[A6]
+  )(f: (A1, A2, A3, A4, A5, A6) => R): Task[R] = {
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3; a4 <- fa4; a5 <- fa5; a6 <- fa6)
       yield f(a1, a2, a3, a4, a5, a6)
   }
@@ -2089,7 +2089,8 @@ object Task extends TaskInstancesLevel1 {
     fa3: Task[A3],
     fa4: Task[A4],
     fa5: Task[A5],
-    fa6: Task[A6])(f: (A1, A2, A3, A4, A5, A6) => R): Task[R] = {
+    fa6: Task[A6]
+  )(f: (A1, A2, A3, A4, A5, A6) => R): Task[R] = {
     val fa12345 = zip5(fa1, fa2, fa3, fa4, fa5)
     parMap2(fa12345, fa6) { case ((a1, a2, a3, a4, a5), a6) => f(a1, a2, a3, a4, a5, a6) }
   }
@@ -2112,7 +2113,8 @@ object Task extends TaskInstancesLevel1 {
     fa2: Task[A2],
     fa3: Task[A3],
     fa4: Task[A4],
-    fa5: Task[A5]): Task[(A1, A2, A3, A4, A5)] =
+    fa5: Task[A5]
+  ): Task[(A1, A2, A3, A4, A5)] =
     parMap5(fa1, fa2, fa3, fa4, fa5)((a1, a2, a3, a4, a5) => (a1, a2, a3, a4, a5))
 
   /** Pairs six [[Task]] instances using [[parMap6]]. */
@@ -2122,7 +2124,8 @@ object Task extends TaskInstancesLevel1 {
     fa3: Task[A3],
     fa4: Task[A4],
     fa5: Task[A5],
-    fa6: Task[A6]): Task[(A1, A2, A3, A4, A5, A6)] =
+    fa6: Task[A6]
+  ): Task[(A1, A2, A3, A4, A5, A6)] =
     parMap6(fa1, fa2, fa3, fa4, fa5, fa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
   /** A run-loop frame index is a number representing the current run-loop
@@ -2303,7 +2306,8 @@ object Task extends TaskInstancesLevel1 {
     scheduler: Scheduler,
     connection: StackedCancelable,
     frameRef: FrameIndexRef,
-    options: Options) {
+    options: Options
+  ) {
 
     /** Helper that returns the
       * [[monix.execution.ExecutionModel ExecutionModel]]

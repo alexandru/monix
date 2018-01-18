@@ -26,8 +26,9 @@ class CompositeException(val errors: Seq[Throwable])
   extends RuntimeException() with Serializable {
 
   override def toString: String = {
-    getClass.getName + (
-      if (errors.isEmpty) "" else {
+    getClass.getName +
+      (if (errors.isEmpty) ""
+      else {
         val (first, last) = errors.splitAt(2)
         val str = first.map(_.getClass.getName).mkString(", ")
         val reasons = if (last.nonEmpty) str + "..." else str

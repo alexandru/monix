@@ -176,7 +176,8 @@ lazy val sharedSettings = warnUnusedImport ++ Seq(
 
   licenses := Seq("APL2" -> url("http://www.apache.org/licenses/LICENSE-2.0.txt")),
   homepage := Some(url("https://monix.io")),
-  headerLicense := Some(HeaderLicense.Custom(
+  headerLicense := Some(
+    HeaderLicense.Custom(
     """|Copyright (c) 2014-2018 by The Monix Project Developers.
        |See the project homepage at: https://monix.io
        |
@@ -191,7 +192,9 @@ lazy val sharedSettings = warnUnusedImport ++ Seq(
        |WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
        |See the License for the specific language governing permissions and
        |limitations under the License."""
-    .stripMargin)),
+    .stripMargin
+    )
+  ),
 
   scmInfo := Some(
     ScmInfo(

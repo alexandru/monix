@@ -469,10 +469,10 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
     * will be `maxRetries + 1`.
     */
   final def onErrorRestart(maxRetries: Long): Coeval[A] =
-    self.onErrorHandleWith(
-      ex =>
-        if (maxRetries > 0) self.onErrorRestart(maxRetries - 1)
-        else Error(ex))
+    self.onErrorHandleWith { ex =>
+      if (maxRetries > 0) self.onErrorRestart(maxRetries - 1)
+      else Error(ex)
+    }
 
   /** Creates a new coeval that in case of error will retry executing the
     * source again and again, until it succeeds.
@@ -866,8 +866,8 @@ object Coeval extends CoevalInstancesLevel0 {
     fa3: Coeval[A3],
     fa4: Coeval[A4],
     fa5: Coeval[A5],
-    fa6: Coeval[A6])(f: (A1, A2, A3, A4, A5, A6) => R): Coeval[R] = {
-
+    fa6: Coeval[A6]
+  )(f: (A1, A2, A3, A4, A5, A6) => R): Coeval[R] = {
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3; a4 <- fa4; a5 <- fa5; a6 <- fa6)
       yield f(a1, a2, a3, a4, a5, a6)
   }
@@ -885,7 +885,8 @@ object Coeval extends CoevalInstancesLevel0 {
     fa1: Coeval[A1],
     fa2: Coeval[A2],
     fa3: Coeval[A3],
-    fa4: Coeval[A4]): Coeval[(A1, A2, A3, A4)] =
+    fa4: Coeval[A4]
+  ): Coeval[(A1, A2, A3, A4)] =
     map4(fa1, fa2, fa3, fa4)((a1, a2, a3, a4) => (a1, a2, a3, a4))
 
   /** Pairs five [[Coeval]] instances. */
@@ -894,7 +895,8 @@ object Coeval extends CoevalInstancesLevel0 {
     fa2: Coeval[A2],
     fa3: Coeval[A3],
     fa4: Coeval[A4],
-    fa5: Coeval[A5]): Coeval[(A1, A2, A3, A4, A5)] =
+    fa5: Coeval[A5]
+  ): Coeval[(A1, A2, A3, A4, A5)] =
     map5(fa1, fa2, fa3, fa4, fa5)((a1, a2, a3, a4, a5) => (a1, a2, a3, a4, a5))
 
   /** Pairs six [[Coeval]] instances. */
@@ -904,7 +906,8 @@ object Coeval extends CoevalInstancesLevel0 {
     fa3: Coeval[A3],
     fa4: Coeval[A4],
     fa5: Coeval[A5],
-    fa6: Coeval[A6]): Coeval[(A1, A2, A3, A4, A5, A6)] =
+    fa6: Coeval[A6]
+  ): Coeval[(A1, A2, A3, A4, A5, A6)] =
     map6(fa1, fa2, fa3, fa4, fa5, fa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
   /** The `Eager` type represents a strict, already evaluated result

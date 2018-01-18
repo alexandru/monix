@@ -1581,8 +1581,9 @@ abstract class Observable[+A] extends Serializable { self =>
     *
     * @see [[mapTask]] for serial execution
     */
-  final def mapParallelUnordered[B](parallelism: Int)(f: A => Task[B])
-    (implicit os: OverflowStrategy[B] = OverflowStrategy.Default): Observable[B] =
+  final def mapParallelUnordered[B](parallelism: Int)(f: A => Task[B])(
+    implicit os: OverflowStrategy[B] = OverflowStrategy.Default
+  ): Observable[B] =
     new MapParallelUnorderedObservable[A, B](self, parallelism, f, os)
 
   /** Converts the source Observable that emits `A` into an Observable
@@ -1596,8 +1597,10 @@ abstract class Observable[+A] extends Serializable { self =>
     * @note $defaultOverflowStrategy
     * @return $mergeReturn
     */
-  final def merge[B](implicit ev: A <:< Observable[B],
-    os: OverflowStrategy[B] = OverflowStrategy.Default): Observable[B] =
+  final def merge[B](
+    implicit ev: A <:< Observable[B],
+    os: OverflowStrategy[B] = OverflowStrategy.Default
+  ): Observable[B] =
     self.mergeMap(x => x)(os)
 
   /** $mergeMapDescription
@@ -1616,8 +1619,10 @@ abstract class Observable[+A] extends Serializable { self =>
     * @note $defaultOverflowStrategy
     * @return $mergeReturn
     */
-  final def mergeDelayErrors[B](implicit ev: A <:< Observable[B],
-    os: OverflowStrategy[B] = OverflowStrategy.Default): Observable[B] =
+  final def mergeDelayErrors[B](
+    implicit ev: A <:< Observable[B],
+    os: OverflowStrategy[B] = OverflowStrategy.Default
+  ): Observable[B] =
     self.mergeMap(x => x)(os)
 
   /** $mergeMapDescription
@@ -1835,7 +1840,7 @@ abstract class Observable[+A] extends Serializable { self =>
     *        throws an error.
     */
   final def onErrorHandle[B >: A](f: Throwable => B): Observable[B] =
-    onErrorHandleWith { elem => Observable.now(f(elem)) }
+    onErrorHandleWith(elem => Observable.now(f(elem)))
 
   /** Returns an observable that mirrors the behavior of the source,
     * unless the source is terminated with an `onError`, in which
@@ -2476,8 +2481,8 @@ abstract class Observable[+A] extends Serializable { self =>
     * @param f is a mapping function over the generated pairs
     */
   final def withLatestFrom4[B1, B2, B3, B4, R](
-    o1: Observable[B1], o2: Observable[B2], o3: Observable[B3], o4: Observable[B4])
-    (f: (A, B1, B2, B3, B4) => R): Observable[R] = {
+    o1: Observable[B1], o2: Observable[B2], o3: Observable[B3], o4: Observable[B4]
+  )(f: (A, B1, B2, B3, B4) => R): Observable[R] = {
 
     self.withLatestFrom(Observable.combineLatest4(o1, o2, o3, o4)) { (a, o) =>
       f(a, o._1, o._2, o._3, o._4)
@@ -4155,8 +4160,9 @@ object Observable {
     * See [[combineLatestMap4]] for a more relaxed alternative that doesn't
     * combine items in strict sequence.
     */
-  def zip4[A1, A2, A3, A4]
-  (oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3], oa4: Observable[A4]): Observable[(A1, A2, A3, A4)] =
+  def zip4[A1, A2, A3, A4](
+    oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3], oa4: Observable[A4]
+  ): Observable[(A1, A2, A3, A4)] =
     new builders.Zip4Observable(oa1, oa2, oa3, oa4)((a1, a2, a3, a4) => (a1, a2, a3, a4))
 
   /** Creates a new observable from four observable sequences
@@ -4192,7 +4198,8 @@ object Observable {
     */
   def zip5[A1, A2, A3, A4, A5](
     oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4], oa5: Observable[A5]): Observable[(A1, A2, A3, A4, A5)] =
+    oa4: Observable[A4], oa5: Observable[A5]
+  ): Observable[(A1, A2, A3, A4, A5)] =
     new builders.Zip5Observable(oa1, oa2, oa3, oa4, oa5)((a1, a2, a3, a4, a5) => (a1, a2, a3, a4, a5))
 
   /** Creates a new observable from five observable sequences
@@ -4209,10 +4216,10 @@ object Observable {
     *
     * @param f is the mapping function applied over the generated pairs
     */
-  def zipMap5[A1, A2, A3, A4, A5, R]
-  (oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4], oa5: Observable[A5])
-    (f: (A1, A2, A3, A4, A5) => R): Observable[R] =
+  def zipMap5[A1, A2, A3, A4, A5, R](
+    oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
+    oa4: Observable[A4], oa5: Observable[A5]
+  )(f: (A1, A2, A3, A4, A5) => R): Observable[R] =
     new builders.Zip5Observable(oa1, oa2, oa3, oa4, oa5)(f)
 
   /** Creates a new observable from five observable sequences
@@ -4229,7 +4236,8 @@ object Observable {
     */
   def zip6[A1, A2, A3, A4, A5, A6](
     oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4], oa5: Observable[A5], oa6: Observable[A6]): Observable[(A1, A2, A3, A4, A5, A6)] =
+    oa4: Observable[A4], oa5: Observable[A5], oa6: Observable[A6]
+  ): Observable[(A1, A2, A3, A4, A5, A6)] =
     new builders.Zip6Observable(oa1, oa2, oa3, oa4, oa5, oa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
   /** Creates a new observable from five observable sequences
@@ -4306,7 +4314,8 @@ object Observable {
     * least one item).
     */
   def combineLatest3[A1, A2, A3](
-    oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3]): Observable[(A1, A2, A3)] =
+    oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3]
+  ): Observable[(A1, A2, A3)] =
     new builders.CombineLatest3Observable(oa1, oa2, oa3)((a1, a2, a3) => (a1, a2, a3))
 
   /** Creates a combined observable from 3 source observables.
@@ -4318,8 +4327,9 @@ object Observable {
     * item (so long as each of the source Observables has emitted at
     * least one item).
     */
-  def combineLatestMap3[A1, A2, A3, R](a1: Observable[A1], a2: Observable[A2], a3: Observable[A3])
-    (f: (A1, A2, A3) => R): Observable[R] =
+  def combineLatestMap3[A1, A2, A3, R](
+    a1: Observable[A1], a2: Observable[A2], a3: Observable[A3]
+  )(f: (A1, A2, A3) => R): Observable[R] =
     new builders.CombineLatest3Observable[A1, A2, A3, R](a1, a2, a3)(f)
 
   /** Creates a combined observable from 4 source observables.
@@ -4333,7 +4343,8 @@ object Observable {
     */
   def combineLatest4[A1, A2, A3, A4](
     oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4]): Observable[(A1, A2, A3, A4)] =
+    oa4: Observable[A4]
+  ): Observable[(A1, A2, A3, A4)] =
     new builders.CombineLatest4Observable(oa1, oa2, oa3, oa4)((a1, a2, a3, a4) => (a1, a2, a3, a4))
 
   /** Creates a combined observable from 4 source observables.
@@ -4345,9 +4356,9 @@ object Observable {
     * item (so long as each of the source Observables has emitted at
     * least one item).
     */
-  def combineLatestMap4[A1, A2, A3, A4, R]
-  (a1: Observable[A1], a2: Observable[A2], a3: Observable[A3], a4: Observable[A4])
-    (f: (A1, A2, A3, A4) => R): Observable[R] =
+  def combineLatestMap4[A1, A2, A3, A4, R](
+    a1: Observable[A1], a2: Observable[A2], a3: Observable[A3], a4: Observable[A4]
+  )(f: (A1, A2, A3, A4) => R): Observable[R] =
     new builders.CombineLatest4Observable[A1, A2, A3, A4, R](a1, a2, a3, a4)(f)
 
   /** Creates a combined observable from 5 source observables.
@@ -4361,7 +4372,8 @@ object Observable {
     */
   def combineLatest5[A1, A2, A3, A4, A5](
     oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4], oa5: Observable[A5]): Observable[(A1, A2, A3, A4, A5)] =
+    oa4: Observable[A4], oa5: Observable[A5]
+  ): Observable[(A1, A2, A3, A4, A5)] =
     new builders.CombineLatest5Observable(oa1, oa2, oa3, oa4, oa5)((a1, a2, a3, a4, a5) => (a1, a2, a3, a4, a5))
 
   /** Creates a combined observable from 5 source observables.
@@ -4373,9 +4385,9 @@ object Observable {
     * item (so long as each of the source Observables has emitted at
     * least one item).
     */
-  def combineLatestMap5[A1, A2, A3, A4, A5, R]
-  (a1: Observable[A1], a2: Observable[A2], a3: Observable[A3], a4: Observable[A4], a5: Observable[A5])
-    (f: (A1, A2, A3, A4, A5) => R): Observable[R] =
+  def combineLatestMap5[A1, A2, A3, A4, A5, R](
+    a1: Observable[A1], a2: Observable[A2], a3: Observable[A3], a4: Observable[A4], a5: Observable[A5]
+  )(f: (A1, A2, A3, A4, A5) => R): Observable[R] =
     new builders.CombineLatest5Observable[A1, A2, A3, A4, A5, R](a1, a2, a3, a4, a5)(f)
 
   /** Creates a combined observable from 6 source observables.
@@ -4389,7 +4401,8 @@ object Observable {
     */
   def combineLatest6[A1, A2, A3, A4, A5, A6](
     oa1: Observable[A1], oa2: Observable[A2], oa3: Observable[A3],
-    oa4: Observable[A4], oa5: Observable[A5], oa6: Observable[A6]): Observable[(A1, A2, A3, A4, A5, A6)] =
+    oa4: Observable[A4], oa5: Observable[A5], oa6: Observable[A6]
+  ): Observable[(A1, A2, A3, A4, A5, A6)] =
     new builders.CombineLatest6Observable(oa1, oa2, oa3, oa4, oa5, oa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
   /** Creates a combined observable from 6 source observables.
