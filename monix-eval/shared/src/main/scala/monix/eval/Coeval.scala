@@ -21,7 +21,7 @@ import cats.{Eval, Monoid}
 import cats.effect.IO
 import cats.kernel.Semigroup
 import monix.eval.Coeval._
-import monix.eval.instances.{CatsMonadToMonoid, CatsMonadToSemigroup, CatsSyncForCoeval}
+import monix.eval.instances.{CatsSyncForCoeval, CatsMonadToMonoid, CatsMonadToSemigroup}
 import monix.eval.internal.{CoevalRunLoop, LazyOnSuccess, StackFrame}
 import monix.execution.misc.NonFatal
 import monix.execution.internal.Platform.fusionMaxStackDepth
@@ -129,7 +129,6 @@ import scala.util.{Failure, Success, Try}
   * need error handling capabilities, then use `Coeval`.
   */
 sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
-
   /** Evaluates the underlying computation and returns the result.
     *
     * NOTE: this can throw exceptions.
@@ -309,9 +308,7 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
     * as obviously nothing gets executed at this point.
     */
   final def foreachL(f: A => Unit): Coeval[Unit] =
-    self.map { a =>
-      f(a); ()
-    }
+    self.map { a => f(a); () }
 
   /** Triggers the evaluation of the source, executing
     * the given function for the generated element.
@@ -469,10 +466,10 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
     * will be `maxRetries + 1`.
     */
   final def onErrorRestart(maxRetries: Long): Coeval[A] =
-    self.onErrorHandleWith { ex =>
-      if (maxRetries > 0) self.onErrorRestart(maxRetries - 1)
+    self.onErrorHandleWith(ex =>
+      if (maxRetries > 0) self.onErrorRestart(maxRetries-1)
       else Error(ex)
-    }
+    )
 
   /** Creates a new coeval that in case of error will retry executing the
     * source again and again, until it succeeds.
@@ -534,7 +531,7 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
     *        the next coeval
     */
   final def onErrorRestartLoop[S, B >: A](initial: S)(f: (Throwable, S, S => Coeval[B]) => Coeval[B]): Coeval[B] =
-    onErrorHandleWith(err => f(err, initial, state => (this: Coeval[B]).onErrorRestartLoop(state)(f)))
+    onErrorHandleWith(err => f(err, initial, state => (this : Coeval[B]).onErrorRestartLoop(state)(f)))
 
   /** Memoizes (caches) the result of the source and reuses it on
     * subsequent invocations of `value`.
@@ -595,13 +592,13 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
     * that will emit the tuple of their results.
     */
   final def zip[B](that: Coeval[B]): Coeval[(A, B)] =
-    for (a <- this; b <- that) yield (a, b)
+    for (a <- this; b <- that) yield (a,b)
 
   /** Zips the values of `this` and `that` and applies the given
     * mapping function on their results.
     */
-  final def zipMap[B, C](that: Coeval[B])(f: (A, B) => C): Coeval[C] =
-    for (a <- this; b <- that) yield f(a, b)
+  final def zipMap[B,C](that: Coeval[B])(f: (A,B) => C): Coeval[C] =
+    for (a <- this; b <- that) yield f(a,b)
 
   override def toString: String = this match {
     case Now(a) => s"Coeval.Now($a)"
@@ -619,7 +616,6 @@ sealed abstract class Coeval[+A] extends (() => A) with Serializable { self =>
   *         `Attempt[A]` is usually an alias for `Either[Throwable, A]`.
   */
 object Coeval extends CoevalInstancesLevel0 {
-
   /** Promotes a non-strict value to a [[Coeval]].
     *
     * Alias of [[eval]].
@@ -685,7 +681,7 @@ object Coeval extends CoevalInstancesLevel0 {
     * Based on Phil Freeman's
     * [[http://functorial.com/stack-safety-for-free/index.pdf Stack Safety for Free]].
     */
-  def tailRecM[A, B](a: A)(f: A => Coeval[Either[A, B]]): Coeval[B] =
+  def tailRecM[A,B](a: A)(f: A => Coeval[Either[A,B]]): Coeval[B] =
     Coeval.defer(f(a)).flatMap {
       case Left(continueA) => tailRecM(continueA)(f)
       case Right(b) => Coeval.now(b)
@@ -696,10 +692,10 @@ object Coeval extends CoevalInstancesLevel0 {
     *
     * It's a simple version of [[traverse]].
     */
-  def sequence[A, M[X] <: TraversableOnce[X]](sources: M[Coeval[A]])(
-    implicit cbf: CanBuildFrom[M[Coeval[A]], A, M[A]]): Coeval[M[A]] = {
+  def sequence[A, M[X] <: TraversableOnce[X]](sources: M[Coeval[A]])
+    (implicit cbf: CanBuildFrom[M[Coeval[A]], A, M[A]]): Coeval[M[A]] = {
     val init = eval(cbf(sources))
-    val r = sources.foldLeft(init)((acc, elem) => acc.zipMap(elem)(_ += _))
+    val r = sources.foldLeft(init)((acc,elem) => acc.zipMap(elem)(_ += _))
     r.map(_.result())
   }
 
@@ -708,10 +704,10 @@ object Coeval extends CoevalInstancesLevel0 {
     *
     * It's a generalized version of [[sequence]].
     */
-  def traverse[A, B, M[X] <: TraversableOnce[X]](sources: M[A])(f: A => Coeval[B])(
-    implicit cbf: CanBuildFrom[M[A], B, M[B]]): Coeval[M[B]] = {
+  def traverse[A, B, M[X] <: TraversableOnce[X]](sources: M[A])(f: A => Coeval[B])
+    (implicit cbf: CanBuildFrom[M[A], B, M[B]]): Coeval[M[B]] = {
     val init = eval(cbf(sources))
-    val r = sources.foldLeft(init)((acc, elem) => acc.zipMap(f(elem))(_ += _))
+    val r = sources.foldLeft(init)((acc,elem) => acc.zipMap(f(elem))(_ += _))
     r.map(_.result())
   }
 
@@ -768,7 +764,8 @@ object Coeval extends CoevalInstancesLevel0 {
     *   }
     * }}}
     */
-  def map3[A1, A2, A3, R](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3])(f: (A1, A2, A3) => R): Coeval[R] = {
+  def map3[A1, A2, A3, R](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3])
+    (f: (A1, A2, A3) => R): Coeval[R] = {
 
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3)
       yield f(a1, a2, a3)
@@ -797,8 +794,9 @@ object Coeval extends CoevalInstancesLevel0 {
     *   }
     * }}}
     */
-  def map4[A1, A2, A3, A4, R](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4])(
-    f: (A1, A2, A3, A4) => R): Coeval[R] = {
+  def map4[A1, A2, A3, A4, R]
+    (fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4])
+    (f: (A1, A2, A3, A4) => R): Coeval[R] = {
 
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3; a4 <- fa4)
       yield f(a1, a2, a3, a4)
@@ -828,8 +826,9 @@ object Coeval extends CoevalInstancesLevel0 {
     *   }
     * }}}
     */
-  def map5[A1, A2, A3, A4, A5, R](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5])(
-    f: (A1, A2, A3, A4, A5) => R): Coeval[R] = {
+  def map5[A1, A2, A3, A4, A5, R]
+    (fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5])
+    (f: (A1, A2, A3, A4, A5) => R): Coeval[R] = {
 
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3; a4 <- fa4; a5 <- fa5)
       yield f(a1, a2, a3, a4, a5)
@@ -860,14 +859,10 @@ object Coeval extends CoevalInstancesLevel0 {
     *   }
     * }}}
     */
-  def map6[A1, A2, A3, A4, A5, A6, R](
-    fa1: Coeval[A1],
-    fa2: Coeval[A2],
-    fa3: Coeval[A3],
-    fa4: Coeval[A4],
-    fa5: Coeval[A5],
-    fa6: Coeval[A6]
-  )(f: (A1, A2, A3, A4, A5, A6) => R): Coeval[R] = {
+  def map6[A1, A2, A3, A4, A5, A6, R]
+    (fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5], fa6: Coeval[A6])
+    (f: (A1, A2, A3, A4, A5, A6) => R): Coeval[R] = {
+
     for (a1 <- fa1; a2 <- fa2; a3 <- fa3; a4 <- fa4; a5 <- fa5; a6 <- fa6)
       yield f(a1, a2, a3, a4, a5, a6)
   }
@@ -881,33 +876,15 @@ object Coeval extends CoevalInstancesLevel0 {
     map3(fa1, fa2, fa3)((a1, a2, a3) => (a1, a2, a3))
 
   /** Pairs four [[Coeval]] instances. */
-  def zip4[A1, A2, A3, A4](
-    fa1: Coeval[A1],
-    fa2: Coeval[A2],
-    fa3: Coeval[A3],
-    fa4: Coeval[A4]
-  ): Coeval[(A1, A2, A3, A4)] =
+  def zip4[A1, A2, A3, A4](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4]): Coeval[(A1, A2, A3, A4)] =
     map4(fa1, fa2, fa3, fa4)((a1, a2, a3, a4) => (a1, a2, a3, a4))
 
   /** Pairs five [[Coeval]] instances. */
-  def zip5[A1, A2, A3, A4, A5](
-    fa1: Coeval[A1],
-    fa2: Coeval[A2],
-    fa3: Coeval[A3],
-    fa4: Coeval[A4],
-    fa5: Coeval[A5]
-  ): Coeval[(A1, A2, A3, A4, A5)] =
+  def zip5[A1, A2, A3, A4, A5](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5]): Coeval[(A1, A2, A3, A4, A5)] =
     map5(fa1, fa2, fa3, fa4, fa5)((a1, a2, a3, a4, a5) => (a1, a2, a3, a4, a5))
 
   /** Pairs six [[Coeval]] instances. */
-  def zip6[A1, A2, A3, A4, A5, A6](
-    fa1: Coeval[A1],
-    fa2: Coeval[A2],
-    fa3: Coeval[A3],
-    fa4: Coeval[A4],
-    fa5: Coeval[A5],
-    fa6: Coeval[A6]
-  ): Coeval[(A1, A2, A3, A4, A5, A6)] =
+  def zip6[A1, A2, A3, A4, A5, A6](fa1: Coeval[A1], fa2: Coeval[A2], fa3: Coeval[A3], fa4: Coeval[A4], fa5: Coeval[A5], fa6: Coeval[A6]): Coeval[(A1, A2, A3, A4, A5, A6)] =
     map6(fa1, fa2, fa3, fa4, fa5, fa6)((a1, a2, a3, a4, a5, a6) => (a1, a2, a3, a4, a5, a6))
 
   /** The `Eager` type represents a strict, already evaluated result
@@ -949,11 +926,9 @@ object Coeval extends CoevalInstancesLevel0 {
   }
 
   object Eager {
-
     /** Promotes a non-strict value to a [[Coeval.Eager]]. */
     def apply[A](f: => A): Eager[A] =
-      try Now(f)
-      catch {
+      try Now(f) catch {
         case ex if NonFatal(ex) => Error(ex)
       }
 
@@ -1013,7 +988,6 @@ object Coeval extends CoevalInstancesLevel0 {
   }
 
   object Once {
-
     /** Builder for an [[Once]] instance. */
     def apply[A](a: () => A): Once[A] =
       new Once[A](a)
@@ -1032,25 +1006,23 @@ object Coeval extends CoevalInstancesLevel0 {
     override def apply(): A = f()
 
     override def run: Eager[A] =
-      try Now(f())
-      catch { case e if NonFatal(e) => Error(e) }
+      try Now(f()) catch { case e if NonFatal(e) => Error(e) }
     override def runAttempt: Either[Throwable, A] =
-      try Right(f())
-      catch { case e if NonFatal(e) => Left(e) }
+      try Right(f()) catch { case e if NonFatal(e) => Left (e) }
     override def runTry: Try[A] =
-      try Success(f())
-      catch { case e if NonFatal(e) => Failure(e) }
+      try Success(f()) catch { case e if NonFatal(e) => Failure(e) }
   }
 
   /** Internal state, the result of [[Coeval.defer]] */
-  private[eval] final case class Suspend[+A](thunk: () => Coeval[A]) extends Coeval[A]
-
+  private[eval] final case class Suspend[+A](thunk: () => Coeval[A])
+    extends Coeval[A]
   /** Internal [[Coeval]] state that is the result of applying `flatMap`. */
-  private[eval] final case class FlatMap[S, A](source: Coeval[S], f: S => Coeval[A]) extends Coeval[A]
+  private[eval] final case class FlatMap[S, A](source: Coeval[S], f: S => Coeval[A])
+    extends Coeval[A]
 
   /** Internal [[Coeval]] state that is the result of applying `map`. */
   private[eval] final case class Map[S, +A](source: Coeval[S], f: S => A, index: Int)
-      extends Coeval[A] with (S => Coeval[A]) {
+    extends Coeval[A] with (S => Coeval[A]) {
 
     def apply(value: S): Coeval[A] =
       new Now(f(value))
@@ -1095,7 +1067,6 @@ object Coeval extends CoevalInstancesLevel0 {
 }
 
 private[eval] abstract class CoevalInstancesLevel0 {
-
   /** Given an `A` type that has a `cats.Semigroup[A]` implementation,
     * then this provides the evidence that `Coeval[A]` also has
     * a `Semigroup[Coeval[A]]` implementation.
