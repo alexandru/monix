@@ -25,14 +25,14 @@ import monix.execution.ExecutionModel.{AlwaysAsyncExecution, BatchedExecution, S
 import monix.execution._
 import monix.execution.atomic.Atomic
 import monix.execution.cancelables.StackedCancelable
-import monix.execution.internal.Platform
 import monix.execution.internal.Platform.fusionMaxStackDepth
+import monix.execution.internal.{Newtype1, Platform}
 import monix.execution.misc.ThreadLocal
-import monix.execution.schedulers.TrampolinedRunnable
+import monix.execution.schedulers.{CanBlock, TrampolinedRunnable}
 
 import scala.annotation.unchecked.{uncheckedVariance => uV}
 import scala.collection.generic.CanBuildFrom
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{Duration, FiniteDuration}
 import scala.concurrent.{ExecutionContext, Future, Promise, TimeoutException}
 import scala.util.{Failure, Success, Try}
 
@@ -215,35 +215,57 @@ import scala.util.{Failure, Success, Try}
   * [[monix.execution.Cancelable.empty Cancelable.empty]] reference,
   * in which case the resulting `Task` would not be cancelable.
   *
-  * But the `Task` we just described is cancelable:
+  * But the `Task` we just described is cancelable, for one at the
+  * edge, due to `runAsync` returning [[monix.execution.Cancelable Cancelable]]
+  * and [[monix.execution.CancelableFuture CancelableFuture]] references:
   *
   * {{{
   *   // Triggering execution
-  *   val f: CancelableFuture[Unit] = delayedHello.run()
+  *   val f: CancelableFuture[Unit] = delayedHello.runAsync
   *
   *   // If we change our mind before the timespan has passed:
   *   f.cancel()
   * }}}
   *
-  * Also, given an `Task` task, we can specify actions that need to be
-  * triggered in case of cancellation:
+  * But also cancellation is described on `Task` as a pure action,
+  * which can be used for example in [[monix.eval.Task.race race]] conditions:
   *
   * {{{
-  *   val task = Task.eval(println("Hello!")).executeWithFork
+  *   import scala.concurrent.duration._
+  *
+  *   val ta = Task(1)
+  *     .delayExecution(4.seconds)
+  *   val tb = Task.raiseError(new TimeoutException)
+  *     .delayExecution(4.seconds)
+  *
+  *   Task.racePair(ta, tb).flatMap {
+  *     case Left((a, taskB)) =>
+  *       taskB.cancel.map(_ => a)
+  *     case Right((taskA, b)) =>
+  *       taskA.cancel.map(_ => b)
+  *   }
+  * }}}
+  *
+  * Also, given a task, we can specify actions that need to be
+  * triggered in case of cancellation, see
+  * [[monix.eval.Task!.doOnCancel doOnCancel]]:
+  *
+  * {{{
+  *   val task = Task.eval(println("Hello!")).executeAsync
   *
   *   task.doOnCancel(Task.eval {
   *     println("A cancellation attempt was made!")
-  *   }
-  *
-  *   val f: CancelableFuture[Unit] = task.run()
-  *
-  *   // Note that in this case cancelling the resulting Future
-  *   // will not stop the actual execution, since it doesn't know
-  *   // how, but it will trigger our on-cancel callback:
-  *
-  *   f.cancel()
-  *   //=> A cancellation attempt was made!
+  *   })
   * }}}
+  *
+  * Controlling cancellation can be achieved with
+  * [[monix.eval.Task!.cancelable cancelable]] and
+  * [[monix.eval.Task!.uncancelable uncancelable]].
+  *
+  * The former activates
+  * [[monix.eval.Task.Options.autoCancelableRunLoops auto-cancelable flatMap chains]],
+  * whereas the later ensures that a task becomes uncancelable such that
+  * it gets executed as an atomic unit (either all or nothing).
   *
   * =Note on the ExecutionModel=
   *
@@ -254,7 +276,7 @@ import scala.util.{Failure, Success, Try}
   * assumptions about how things will end up executed, as ultimately
   * it is the implementation's job to decide on the best execution
   * model. All you are guaranteed (and can assume) is asynchronous
-  * execution after executing `runAsync()`.
+  * execution after executing `runAsync`.
   *
   * Currently the default
   * [[monix.execution.ExecutionModel ExecutionModel]] specifies
@@ -285,6 +307,137 @@ import scala.util.{Failure, Success, Try}
   *
   * @define optionsDesc a set of [[monix.eval.Task.Options Options]]
   *         that determine the behavior of Task's run-loop.
+  *         
+  * @define startInspiration Inspired by
+  *         [[https://github.com/functional-streams-for-scala/fs2 FS2]],
+  *         with the difference that this method does not fork
+  *         automatically, being consistent with Monix's default
+  *         behavior.
+  *
+  * @define runSyncUnsafeDesc Evaluates the source task synchronously and
+  *         returns the result immediately or blocks the underlying thread
+  *         until the result is ready.
+  *
+  *         '''WARNING:''' blocking operations are unsafe and incredibly error
+  *         prone on top of the JVM. It's a good practice to not block any threads
+  *         and use the asynchronous `runAsync` methods instead.
+  *
+  *         In general prefer to use the asynchronous
+  *         [[monix.eval.Task!.runAsync(implicit* .runAsync]] and to
+  *         structure your logic around asynchronous actions in a
+  *         non-blocking way. But in case you're blocking only once,
+  *         in `main`, at the "edge of the world" so to speak, then
+  *         it's OK.
+  *
+  *         Sample:
+  *         {{{
+  *           import scala.concurrent.duration._
+  *
+  *           task.runSyncUnsafe(3.seconds)
+  *         }}}
+  *
+  *         This is equivalent with:
+  *         {{{
+  *           import scala.concurrent.Await
+  *
+  *           Await.result(task.runAsync, 3.seconds)
+  *         }}}
+  *
+  *         Some implementation details:
+  *
+  *          - blocking the underlying thread is done by triggering Scala's
+  *            `BlockingContext` (`scala.concurrent.blocking`), just like
+  *            Scala's `Await.result`
+  *          - the `timeout` is mandatory, just like when using Scala's
+  *            `Await.result`, in order to make the caller aware that the
+  *            operation is dangerous and that setting a `timeout` is good
+  *            practice
+  *          - the loop starts in an execution mode that ignores
+  *            [[monix.execution.ExecutionModel.BatchedExecution BatchedExecution]] or
+  *            [[monix.execution.ExecutionModel.AlwaysAsyncExecution AlwaysAsyncExecution]],
+  *            until the first asynchronous boundary. This is because we want to block
+  *            the underlying thread for the result, in which case preserving
+  *            fairness by forcing (batched) async boundaries doesn't do us any good,
+  *            quite the contrary, the underlying thread being stuck until the result
+  *            is available or until the timeout exception gets triggered.
+  *
+  *         Not supported on top of JavaScript engines and trying to use it
+  *         with Scala.js will trigger a compile time error.
+  *
+  *         For optimizations on top of JavaScript you can use [[runSyncMaybe]]
+  *         instead.
+  *
+  * @define runSyncUnsafeTimeout is a duration that specifies the
+  *         maximum amount of time that this operation is allowed to block the
+  *         underlying thread. If the timeout expires before the result is ready,
+  *         a `TimeoutException` gets thrown. Note that you're allowed to
+  *         pass an infinite duration (with `Duration.Inf`), but unless
+  *         it's `main` that you're blocking and unless you're doing it only
+  *         once, then this is definitely not recommended — provide a finite
+  *         timeout in order to avoid deadlocks.
+  *
+  * @define runSyncUnsafePermit is an implicit value that's only available for
+  *         the JVM and not for JavaScript, its purpose being to stop usage of
+  *         this operation on top of engines that do not support blocking threads.
+  *
+  * @define runSyncMaybeDesc Tries to execute the source synchronously.
+  *
+  *         As an alternative to `runAsync`, this method tries to execute
+  *         the source task immediately on the current thread and call-stack.
+  *
+  *         WARNING: This method is a partial function, throwing exceptions
+  *         in case errors happen immediately (synchronously).
+  *
+  *         Usage sample:
+  *         {{{
+  *           try task.runSyncMaybe match {
+  *             case Right(a) => println("Success: " + a)
+  *             case Left(future) =>
+  *               future.onComplete {
+  *                 case Success(a) => println("Async success: " + a)
+  *                 case Failure(e) => println("Async error: " + e)
+  *               }
+  *           } catch {
+  *             case NonFatal(e) =>
+  *               println("Error: " + e)
+  *           }
+  *         }}}
+  *
+  *         Obviously the purpose of this method is to be used for
+  *         optimizations.
+  *
+  *         Also see [[runSyncUnsafe]], the blocking execution mode that can
+  *         only work on top of the JVM.
+  *
+  * @define runSyncMaybeReturn `Right(result)` in case a result was processed,
+  *         or `Left(future)` in case an asynchronous boundary
+  *         was hit and further async execution is needed
+  *
+  * @define bracketErrorNote '''NOTE on error handling''': one big
+  *         difference versus `try {} finally {}` is that, in case
+  *         both the `release` function and the `use` function throws,
+  *         the error raised by `use` gets signaled and the error
+  *         raised by `release` gets reported with `System.err` for
+  *         [[Coeval]] or with
+  *         [[monix.execution.Scheduler.reportFailure Scheduler.reportFailure]]
+  *         for [[Task]].
+  *
+  *         For example:
+  *
+  *         {{{
+  *           Task("resource").bracket { _ =>
+  *             // use
+  *             Task.raiseError(new RuntimeException("Foo"))
+  *           } { _ =>
+  *             // release
+  *             Task.raiseError(new RuntimeException("Bar"))
+  *           }
+  *         }}}
+  *
+  *         In this case the error signaled downstream is `"Foo"`,
+  *         while the `"Bar"` error gets reported. This is consistent
+  *         with the behavior of Haskell's `bracket` operation and NOT
+  *         with `try {} finally {}` from Scala, Java or JavaScript.
   */
 sealed abstract class Task[+A] extends Serializable {
   import monix.eval.Task._
@@ -330,6 +483,54 @@ sealed abstract class Task[+A] extends Serializable {
   def runAsyncOpt(cb: Callback[A])(implicit s: Scheduler, opts: Options): Cancelable =
     TaskRunLoop.startLight(this, s, opts, cb)
 
+  /** $runSyncMaybeDesc
+    *
+    * @param s $schedulerDesc
+    * @return $runSyncMaybeReturn
+    */
+  final def runSyncMaybe(implicit s: Scheduler): Either[CancelableFuture[A], A] =
+    runSyncMaybeOpt(s, defaultOptions)
+
+  /** $runSyncMaybeDesc
+    *
+    * @param s $schedulerDesc
+    * @param opts $optionsDesc
+    * @return $runSyncMaybeReturn
+    */
+  final def runSyncMaybeOpt(implicit s: Scheduler, opts: Options): Either[CancelableFuture[A], A] = {
+    val future = runAsyncOpt(s, opts)
+    future.value match {
+      case Some(value) =>
+        value match {
+          case Success(a) => Right(a)
+          case Failure(e) => throw e
+        }
+      case None =>
+        Left(future)
+    }
+  }
+
+  /** $runSyncUnsafeDesc
+    *
+    * @param timeout $runSyncUnsafeTimeout
+    * @param s $schedulerDesc
+    * @param permit $runSyncUnsafePermit
+    */
+  final def runSyncUnsafe(timeout: Duration)
+    (implicit s: Scheduler, permit: CanBlock): A =
+    TaskRunSyncUnsafe(this, timeout, s, defaultOptions)
+
+  /** $runSyncUnsafeDesc
+    *
+    * @param timeout $runSyncUnsafeTimeout
+    * @param s $schedulerDesc
+    * @param opts $optionsDesc
+    * @param permit $runSyncUnsafePermit
+    */
+  final def runSyncUnsafeOpt(timeout: Duration)
+    (implicit s: Scheduler, opts: Options, permit: CanBlock): A =
+    TaskRunSyncUnsafe(this, timeout, s, opts)
+
   /** Similar to Scala's `Future#onComplete`, this method triggers
     * the evaluation of a `Task` and invokes the given callback whenever
     * the result is available.
@@ -343,52 +544,6 @@ sealed abstract class Task[+A] extends Serializable {
       def onSuccess(value: A): Unit = f(Success(value))
       def onError(ex: Throwable): Unit = f(Failure(ex))
     })(s)
-
-  /** Tries to execute the source synchronously.
-    *
-    * As an alternative to `runAsync`, this method tries to execute
-    * the source task immediately on the current thread and call-stack.
-    *
-    * WARNING: This method is a partial function, throwing exceptions
-    * in case errors happen immediately (synchronously).
-    *
-    * Usage sample:
-    *
-    * {{{
-    *   try task.runSyncMaybe match {
-    *     case Right(a) => println("Success: " + a)
-    *     case Left(future) =>
-    *       future.onComplete {
-    *         case Success(a) => println("Async success: " + a)
-    *         case Failure(e) => println("Async error: " + e)
-    *       }
-    *   } catch {
-    *     case NonFatal(e) =>
-    *       println("Error: " + e)
-    *   }
-    * }}}
-    *
-    * Obviously the purpose of this method is to be used for
-    * optimizations.
-    *
-    * @return `Right(result)` in case a result was processed,
-    *         or `Left(future)` in case an asynchronous boundary
-    *         was hit and further async execution is needed or
-    *         in case of failure
-    */
-  final def runSyncMaybe(implicit s: Scheduler): Either[CancelableFuture[A], A] = {
-    val future = this.runAsync(s)
-
-    future.value match {
-      case Some(value) =>
-        value match {
-          case Success(a) => Right(a)
-          case Failure(e) => throw e
-        }
-      case None =>
-        Left(future)
-    }
-  }
 
   /** Creates a new [[Task]] that will expose any triggered error
     * from the source.
@@ -463,6 +618,121 @@ sealed abstract class Task[+A] extends Serializable {
   final def asyncBoundary(s: Scheduler): Task[A] =
     this.flatMap(a => Task.shift(s).map(_ => a))
 
+  /** Returns a task that treats the source task as the acquisition of a resource,
+    * which is then exploited by the `use` function and then `released`.
+    *
+    * The `bracket` operation is the equivalent of the
+    * `try {} catch {} finally {}` statements from mainstream languages.
+    *
+    * The `bracket` operation installs the necessary exception handler to release
+    * the resource in the event of an exception being raised during the computation,
+    * or in case of cancellation.
+    *
+    * If an exception is raised, then `bracket` will re-raise the exception
+    * ''after'' performing the `release`. If the resulting task gets cancelled,
+    * then `bracket` will still perform the `release`, but the yielded task
+    * will be non-terminating (equivalent with [[Task.never]]).
+    *
+    * Example:
+    *
+    * {{{
+    *   import java.io._
+    *
+    *   def readFile(file: File): Task[String] = {
+    *     // Opening a file handle for reading text
+    *     val acquire = Task.eval(new BufferedReader(
+    *       new InputStreamReader(new FileInputStream(file), "utf-8")
+    *     ))
+    *
+    *     acquire.bracket { in =>
+    *       // Usage part
+    *       Task.eval {
+    *         // Yes, ugly Java, non-FP loop;
+    *         // side-effects are suspended though
+    *         var line: String = null
+    *         val buff = new StringBuilder()
+    *         do {
+    *           line = in.readLine()
+    *           if (line != null) buff.append(line)
+    *         } while (line != null)
+    *         buff.toString()
+    *       }
+    *     } { in =>
+    *       // The release part
+    *       Task.eval(in.close())
+    *     }
+    *   }
+    * }}}
+    *
+    * Note that in case of cancellation the underlying implementation cannot
+    * guarantee that the computation described by `use` doesn't end up
+    * executed concurrently with the computation from `release`. In the example
+    * above that ugly Java loop might end up reading from a `BufferedReader`
+    * that is already closed due to the task being cancelled, thus triggering
+    * an error in the background with nowhere to go but in
+    * [[monix.execution.Scheduler.reportFailure Scheduler.reportFailure]].
+    *
+    * In this particular example, given that we are just reading from a file,
+    * it doesn't matter. But in other cases it might matter, as concurrency
+    * on top of the JVM when dealing with I/O might lead to corrupted data.
+    *
+    * For those cases you might want to do synchronization (e.g. usage of
+    * locks and semaphores) and you might want to use [[bracketE]], the
+    * version that allows you to differentiate between normal termination
+    * and cancellation.
+    *
+    * $bracketErrorNote
+    *
+    * @see [[bracketE]]
+    *
+    * @param use is a function that evaluates the resource yielded by the source,
+    *        yielding a result that will get generated by the task returned
+    *        by this `bracket` function
+    *
+    * @param release is a function that gets called after `use` terminates,
+    *        either normally or in error, or if it gets cancelled, receiving
+    *        as input the resource that needs to be released
+    */
+  final def bracket[B](use: A => Task[B])(release: A => Task[Unit]): Task[B] =
+    bracketE(use)((a, _) => release(a))
+
+  /** Returns a task that treats the source task as the acquisition of a resource,
+    * which is then exploited by the `use` function and then `released`, with
+    * the possibility of distinguishing between normal termination and cancellation,
+    * such that an appropriate release of resources can be executed.
+    *
+    * The `bracketE` operation is the equivalent of `try {} catch {} finally {}`
+    * statements from mainstream languages.
+    *
+    * The `bracketE` operation installs the necessary exception handler to release
+    * the resource in the event of an exception being raised during the computation,
+    * or in case of cancellation.
+    *
+    * In comparison with the simpler [[bracket]] version, this one allows the
+    * caller to differentiate between normal termination and cancellation.
+    *
+    * The `release` function receives as input:
+    *
+    *  - `Left(None)` in case of cancellation
+    *  - `Left(Some(error))` in case `use` terminated with an error
+    *  - `Right(b)` in case of success
+    *
+    * $bracketErrorNote
+    *
+    * @see [[bracket]]
+    *
+    * @param use is a function that evaluates the resource yielded by the source,
+    *        yielding a result that will get generated by this function on
+    *        evaluation
+    *
+    * @param release is a function that gets called after `use` terminates,
+    *        either normally or in error, or if it gets cancelled, receiving
+    *        as input the resource that needs that needs release, along with
+    *        the result of `use` (cancellation, error or successful result)
+    */
+  final def bracketE[B](use: A => Task[B])(release: (A, Either[Option[Throwable], B]) => Task[Unit]): Task[B] =
+    TaskBracket(this, use, release)
+
   /** Transforms a [[Task]] into a [[Coeval]] that tries to execute the
     * source synchronously, returning either `Right(value)` in case a
     * value is available immediately, or `Left(future)` in case we
@@ -476,9 +746,10 @@ sealed abstract class Task[+A] extends Serializable {
     * Returns a new task that will complete when the cancellation is
     * sent (but not when it is observed).
     *
-    * Compared with
-    * [[monix.execution.CancelableFuture.cancel CancelableFuture.cancel()]]
-    * this action is pure.
+    * Compared with triggering
+    * [[monix.execution.Cancelable.cancel Cancelable.cancel]] or
+    * [[monix.execution.CancelableFuture.cancel CancelableFuture.cancel]]
+    * after [[Task.runAsync(implicit* runAsync]], this action is pure.
     *
     * Example:
     * {{{
@@ -494,30 +765,29 @@ sealed abstract class Task[+A] extends Serializable {
   /** Returns a task that waits for the specified `timespan` before
     * executing and mirroring the result of the source.
     *
-    * @see [[delayExecutionWith]] for delaying the execution of the
-    *     source with a customizable trigger.
-    */
-  final def delayExecution(timespan: FiniteDuration): Task[A] =
-    TaskDelayExecution(this, timespan)
-
-  /** Returns a task that waits for the specified `trigger` to succeed
-    * before mirroring the result of the source.
+    * In this example we're printing to standard output, but before
+    * doing that we're introducing a 3 seconds delay:
     *
-    * If the `trigger` ends in error, then the resulting task will
-    * also end in error.
-    *
-    * As an example, these are equivalent (in the observed effects and
-    * result, not necessarily in implementation):
     * {{{
-    *   val ta = source.delayExecution(10.seconds)
-    *   val tb = source.delayExecutionWith(Task.unit.delayExecution(10.seconds))
+    *   Task(println("Hello!"))
+    *     .delayExecution(3.seconds)
     * }}}
     *
-    * @see [[delayExecution]] for delaying the execution of the
-    *     source with a simple timespan
+    * This operation is also equivalent with:
+    *
+    * {{{
+    *   Task.sleep(timespan).flatMap(_ => task)
+    * }}}
+    *
+    * See [[Task.sleep]] for the operation that describes the effect
+    * and [[Task.delayResult]] for the version that evaluates the
+    * task on time, but delays the signaling of the result.
+    *
+    * @param timespan is the time span to wait before triggering
+    *        the evaluation of the task
     */
-  final def delayExecutionWith(trigger: Task[Any]): Task[A] =
-    TaskDelayExecutionWith(this, trigger)
+  final def delayExecution(timespan: FiniteDuration): Task[A] =
+    Task.sleep(timespan).flatMap(_ => this)
 
   /** Returns a task that executes the source immediately on `runAsync`,
     * but before emitting the `onSuccess` result for the specified
@@ -526,36 +796,36 @@ sealed abstract class Task[+A] extends Serializable {
     * Note that if an error happens, then it is streamed immediately
     * with no delay.
     *
-    * @see [[delayResultBySelector]] for applying different
-    *     delay strategies depending on the signaled result.
-    */
-  final def delayResult(timespan: FiniteDuration): Task[A] =
-    TaskDelayResult(this, timespan)
-
-  /** Returns a task that executes the source immediately on `runAsync`,
-    * but with the result delayed by the specified `selector`.
+    * See [[delayExecution]] for delaying the evaluation of the
+    * task with the specified duration. The [[delayResult]] operation
+    * is effectively equivalent with:
     *
-    * The `selector` generates another `Task` whose execution will
-    * delay the signaling of the result generated by the source.
-    * Compared with [[delayResult]] this gives you an opportunity
-    * to apply different delay strategies depending on the
-    * signaled result.
-    *
-    * As an example, these are equivalent (in the observed effects
-    * and result, not necessarily in implementation):
     * {{{
-    *   val t1 = source.delayResult(10.seconds)
-    *   val t2 = source.delayResultBySelector(_ =>
-    *     Task.unit.delayExecution(10.seconds))
+    *   task.flatMap(a => Task.now(a).delayExecution(timespan))
     * }}}
     *
-    * Note that if an error happens, then it is streamed immediately
-    * with no delay.
+    * Or if we are to use the [[Task.sleep]] describing just the
+    * effect, this operation is equivalent with:
     *
-    * @see [[delayResult]] for delaying with a simple timeout
+    * {{{
+    *   task.flatMap(a => Task.sleep(timespan).map(_ => a))
+    * }}}
+    *
+    * Thus in this example 3 seconds will pass before the result
+    * is being generated by the source, plus another 5 seconds
+    * before it is finally emitted:
+    *
+    * {{{
+    *   Task.eval(1 + 1)
+    *     .delayExecution(3.seconds)
+    *     .delayResult(5.seconds)
+    * }}}
+    *
+    * @param timespan is the time span to sleep before signaling
+    *        the result, but after the evaluation of the source
     */
-  final def delayResultBySelector[B](selector: A => Task[B]): Task[A] =
-    TaskDelayResultBySelector(this, selector)
+  final def delayResult(timespan: FiniteDuration): Task[A] =
+    flatMap(a => Task.sleep(timespan).map(_ => a))
 
   /** Overrides the default [[monix.execution.Scheduler Scheduler]],
     * possibly forcing an asynchronous boundary before execution
@@ -653,7 +923,7 @@ sealed abstract class Task[+A] extends Serializable {
     * }}}
     *
     * In this example the implementation of `task` will receive
-    * the reference to `io` and will use it on evaluation, while
+    * the reference to `io1` and will use it on evaluation, while
     * the second invocation of `executeOn` will create an unnecessary
     * async boundary (if `forceAsync = true`) or be basically a
     * costly no-op. This might be confusing but consider the
@@ -672,7 +942,7 @@ sealed abstract class Task[+A] extends Serializable {
     *
     *   def sayHello2(ec: ExecutionContext): Unit =
     *     // Overriding the default `ec`!
-    *     sayHello(io)
+    *     sayHello(io1)
     *
     *   def sayHello3(ec: ExecutionContext): Unit =
     *     // Overriding the default no longer has the desired effect
@@ -719,7 +989,7 @@ sealed abstract class Task[+A] extends Serializable {
     * the async boundary will be the default, meaning the one used to
     * start the run-loop in `runAsync`.
     */
-  final def executeWithFork: Task[A] =
+  final def executeAsync: Task[A] =
     Task.shift.flatMap(_ => this)
 
   /** Returns a new task that will execute the source with a different
@@ -756,6 +1026,67 @@ sealed abstract class Task[+A] extends Serializable {
     */
   final def executeWithOptions(f: Options => Options): Task[A] =
     TaskExecuteWithOptions(this, f)
+
+  /** Returns a new task that is cancelable.
+    *
+    * Normally Monix Tasks have these characteristics:
+    *
+    *  - `flatMap` chains are not cancelable by default
+    *  - when creating [[Task.create async tasks]] the user has to specify explicit
+    *    cancellation logic
+    *
+    * This operation returns a task that has [[Task.Options.autoCancelableRunLoops]]
+    * enabled upon evaluation, thus being equivalent with:
+    * {{{
+    *   task.executeWithOptions(_.enableAutoCancelableRunLoops)
+    * }}}
+    *
+    * What this does is two-fold:
+    *
+    *  - `flatMap` chains become cancelable on async boundaries, which works in
+    *    combination with [[monix.execution.ExecutionModel.BatchedExecution BatchedExecution]]
+    *    that's enabled by default (injected by [[monix.execution.Scheduler Scheduler]],
+    *    but can also be changed with [[executeWithModel]])
+    *  - even if the source task cannot be cancelled, upon completion the result
+    *    is not allowed to be streamed and the continuation is not allowed to execute
+    *
+    * For example this is a function that calculates the n-th Fibonacci element:
+    * {{{
+    *   def fib(n: Int): Task[Long] = {
+    *     def loop(n: Int, a: Long, b: Long): Task[Long] =
+    *       Task.suspend {
+    *         if (n > 0)
+    *           loop(n - 1, b, a + b)
+    *         else
+    *           Task.now(a)
+    *       }
+    *
+    *     loop(n, 0, 1).cancelable
+    *   }
+    * }}}
+    * 
+    * Normally this isn't cancelable and it might take a long time, but
+    * by calling `cancelable` on the result, we ensure that when cancellation
+    * is observed, at async boundaries, the loop will stop with the task
+    * becoming a non-terminating one.
+    * 
+    * This operation represents the opposite of [[uncancelable]]. And note
+    * that it works even for tasks that are uncancelable / atomic, because
+    * it blocks the rest of the `flatMap` loop from executing, functioning
+    * like a sort of cancellation boundary:
+    *
+    * {{{
+    *   Task(println("Hello ..."))
+    *     .cancelable
+    *     .flatMap(_ => Task.eval(println("World!")))
+    * }}}
+    *
+    * Normally [[Task.apply]] does not yield a cancelable task, but by applying
+    * the `cancelable` transformation to it, the `println` will execute,
+    * but not the subsequent `flatMap` operation.
+    */
+  def cancelable: Task[A] =
+    executeWithOptions(_.enableAutoCancelableRunLoops)
 
   /** Returns a failed projection of this task.
     *
@@ -800,6 +1131,54 @@ sealed abstract class Task[+A] extends Serializable {
   final def foreach(f: A => Unit)(implicit s: Scheduler): CancelableFuture[Unit] =
     foreachL(f).runAsync(s)
 
+  /** Start asynchronous execution of the source suspended in the `Task` context.
+    *
+    * This can be used for non-deterministic / concurrent execution.
+    * The following code is more or less equivalent with
+    * [[Task.parMap2]] (minus the behavior on error handling and
+    * cancellation, plus forced async execution):
+    *
+    * {{{
+    *   def par2[A, B](ta: Task[A], tb: Task[B]): Task[(A, B)] =
+    *     for {
+    *       fa <- ta.fork
+    *       fb <- tb.fork
+    *        a <- fa
+    *        b <- fb
+    *     } yield (a, b)
+    * }}}
+    *
+    * Note in such a case usage of [[Task.parMap2 parMap2]]
+    * (and [[Task.parMap3 parMap3]], etc.) is still recommended
+    * because of behavior on error and cancellation — consider that
+    * in the example above, if the first task finishes in error,
+    * the second task doesn't get cancelled.
+    *
+    * IMPORTANT — this operation forces an asynchronous boundary before
+    * execution, as in general this law holds:
+    * {{{
+    *   fa.fork <-> fa.executeAsync.start
+    * }}}
+    *
+    * See [[start]] for the equivalent that does not start the task with
+    * a forced async boundary.
+    */
+  final def fork: Task[Task[A]] =
+    executeAsync.start
+
+  /** Start asynchronous execution of the source suspended in the `Task` context,
+    * running it in the background and discarding the result.
+    *
+    * Similar to [[fork]] after mapping result to Unit. Below law holds:
+    *
+    * {{{
+    *   task.forkAndForget <-> task.fork.map(_ => ())
+    * }}}
+    *
+    */
+  final def forkAndForget: Task[Unit] =
+    TaskForkAndForget(this)
+
   /** Returns a new `Task` in which `f` is scheduled to be run on
     * completion. This would typically be used to release any
     * resources acquired by this `Task`.
@@ -843,6 +1222,48 @@ sealed abstract class Task[+A] extends Serializable {
   /** Dematerializes the source's result from a `Try`. */
   final def dematerialize[B](implicit ev: A <:< Try[B]): Task[B] =
     this.asInstanceOf[Task[Try[B]]].flatMap(fromTry)
+
+  /** Returns a new task that mirrors the source task for normal termination,
+    * but that triggers the given error on cancellation.
+    *
+    * Normally tasks that are cancelled become non-terminating.
+    * Here's an example of a cancelable task:
+    *
+    * {{{
+    *   val tenSecs = Task.sleep(10)
+    *   val task = tenSecs.fork.flatMap { fa =>
+    *     // Triggering pure cancellation, then trying to get its result
+    *     fa.cancel.flatMap(_ => fa)
+    *   }
+    *
+    *   task.timeout(10.seconds).runAsync
+    *   //=> throws TimeoutException
+    * }}}
+    *
+    * In general you can expect cancelable tasks to become non-terminating on
+    * cancellation.
+    *
+    * This `onCancelRaiseError` operator transforms a task that would yield
+    * [[Task.never]] on cancellation into one that yields [[Task.raiseError]].
+    *
+    * Example:
+    * {{{
+    *   import java.util.concurrent.CancellationException
+    *
+    *   val tenSecs = Task.sleep(10.seconds)
+    *     .onCancelRaiseError(new CancellationException)
+    *
+    *   val task = tenSecs.fork.flatMap { fa =>
+    *     // Triggering pure cancellation, then trying to get its result
+    *     fa.cancel.flatMap(_ => fa)
+    *   }
+    *
+    *   task.runAsync
+    *   // => CancellationException
+    * }}}
+    */
+  final def onCancelRaiseError(e: Throwable): Task[A] =
+    TaskCancellation.raiseError(this, e)
 
   /** Creates a new task that will try recovering from an error by
     * matching it with another task using the given partial function.
@@ -1074,20 +1495,16 @@ sealed abstract class Task[+A] extends Serializable {
     * in the example above, if the first task finishes in error,
     * the second task doesn't get cancelled.
     *
-    * IMPORTANT — this operation does not fork, it does not introduce
-    * an asynchronous boundary, so in case the evaluation of a task
-    * is immediate, a fork might be needed to make evaluation happen
-    * on another thread or stack frame (if it doesn't do that already):
+    * IMPORTANT — this operation does start with an asynchronous boundary.
+    * You can either use [[fork]] as an alternative, or use [[executeAsync]]
+    * just before calling `start`, as in general this law holds:
     *
     * {{{
-    *   Task.fork(myTask).start
+    *   fa.fork <-> fa.executeAsync.start
     * }}}
     *
-    * Inspired by
-    * [[https://github.com/functional-streams-for-scala/fs2 FS2]],
-    * with the difference that this method does not fork
-    * automatically, being consistent with Monix's default
-    * behavior.
+    * See [[fork]] for the equivalent that does starts the task with
+    * a forced async boundary.
     */
   final def start: Task[Task[A]] =
     TaskStart(this)
@@ -1160,7 +1577,20 @@ sealed abstract class Task[+A] extends Serializable {
     FlatMap(this, StackFrame.fold(fa, fe))
 
   /** Makes the source `Task` uninterruptible such that a [[cancel]]
-    * signal has no effect until it finishes.
+    * signal has no effect.
+    *
+    * {{{
+    *   val cancelable = Task
+    *     .eval(println("Hello!"))
+    *     .delayExecution(10.seconds)
+    *     .runAsync
+    *
+    *   // No longer works
+    *   cancelable.cancel()
+    *
+    *   // After 10 seconds
+    *   //=> Hello!
+    * }}}
     */
   final def uncancelable: Task[A] =
     TaskCancellation.uncancelable(this)
@@ -1195,7 +1625,7 @@ sealed abstract class Task[+A] extends Serializable {
   * @define shiftDesc For example we can introduce an
   *         asynchronous boundary in the `flatMap` chain before a
   *         certain task, this being literally the implementation of
-  *         [[Task.fork[A](fa:monix\.eval\.Task[A])* Task.fork(fa)]]:
+  *         [[Task.executeAsync executeAsync]]:
   *
   *         {{{
   *           Task.shift.flatMap(_ => task)
@@ -1229,10 +1659,15 @@ object Task extends TaskInstancesLevel1 {
   /** Returns a new task that, when executed, will emit the result of
     * the given function, executed asynchronously.
     *
+    * This operation is the equivalent of:
+    * {{{
+    *   Task.eval(f).executeAsync
+    * }}}
+    *
     * @param f is the callback to execute asynchronously
     */
   def apply[A](f: => A): Task[A] =
-    fork(eval(f))
+    eval(f).executeAsync
 
   /** Returns a `Task` that on execution is always successful, emitting
     * the given strict value.
@@ -1406,31 +1841,6 @@ object Task extends TaskInstancesLevel1 {
   /** Transforms a [[Coeval]] into a [[Task]]. */
   def coeval[A](a: Coeval[A]): Task[A] = Eval(a)
 
-  /** Mirrors the given source `Task`, but upon execution ensure
-    * that evaluation forks into a separate (logical) thread.
-    *
-    * The [[monix.execution.Scheduler Scheduler]] used will be
-    * the one that is used to start the run-loop in `runAsync`.
-    *
-    * Alias for [[Task.executeWithFork .executeWithFork]], see its
-    * description.
-    *
-    * @param fa is the task that will get executed with a forced
-    *        asynchronous boundary
-    */
-  def fork[A](fa: Task[A]): Task[A] =
-    fa.executeWithFork
-
-  /** Mirrors the given source `Task`, but upon execution override
-    * the default [[monix.execution.Scheduler Scheduler]] and force
-    * an asynchronous boundary right before execution.
-    *
-    * Alias for [[Task.executeOn .executeOn]] with
-    * `forceAsync = true`, see its description.
-    */
-  def fork[A](fa: Task[A], s: Scheduler): Task[A] =
-    fa.executeOn(s)
-
   /** $createAsyncDesc
     *
     * Alias for [[Task.create]].
@@ -1599,6 +2009,28 @@ object Task extends TaskInstancesLevel1 {
         }
       })
     }
+
+  /** Creates a new `Task` that will sleep for the given duration,
+    * emitting a tick when that time span is over.
+    *
+    * As an example on evaluation this will print "Hello!" after
+    * 3 seconds:
+    *
+    * {{{
+    *   import scala.concurrent.duration._
+    *
+    *   Task.sleep(3.seconds).flatMap { _ =>
+    *     Task.eval(println("Hello!"))
+    *   }
+    * }}}
+    *
+    * See [[Task.delayExecution]] for this operation described as
+    * a method on `Task` references or [[Task.delayResult]] for the
+    * helper that triggers the evaluation of the source on time, but
+    * then delays the result.
+    */
+  def sleep(timespan: FiniteDuration): Task[Unit] =
+    TaskSleep.apply(timespan)
 
   /** Given a `TraversableOnce` of tasks, transforms it to a task signaling
     * the collection, executing the tasks one by one and gathering their
@@ -2276,6 +2708,85 @@ object Task extends TaskInstancesLevel1 {
     }
   }
 
+  // -- DEPRECATIONS
+
+  /** DEPRECATED — please use [[Task!.executeAsync .executeAsync]].
+    *
+    * The reason for the deprecation is the repurposing of the word "fork".
+    */
+  @deprecated("Please use Task!.executeAsync", "3.0.0")
+  def fork[A](fa: Task[A]): Task[A] = {
+    // $COVERAGE-OFF$
+    fa.executeAsync
+    // $COVERAGE-ON$
+  }
+
+  /** DEPRECATED — please use [[Task.executeOn .executeOn]].
+    *
+    * The reason for the deprecation is the repurposing of the word "fork".
+    */
+  @deprecated("Please use Task!.executeOn", "3.0.0")
+  def fork[A](fa: Task[A], s: Scheduler): Task[A] = {
+  // $COVERAGE-OFF$
+    fa.executeOn(s)
+    // $COVERAGE-ON$
+  }
+
+  implicit final class DeprecatedExtensions[A](val self: Task[A]) extends AnyVal {
+    /** DEPRECATED - renamed to [[Task.executeAsync executeAsync]].
+      *
+      * The reason for the deprecation is the repurposing of the word "fork".
+      */
+    @deprecated("Renamed to Task!.executeAsync", "3.0.0")
+    def executeWithFork: Task[A] = {
+      // $COVERAGE-OFF$
+      self.executeAsync
+      // $COVERAGE-ON$
+    }
+
+    /** DEPRECATED - please use [[Task.flatMap flatMap]].
+      *
+      * The reason for the deprecation is that this operation is
+      * redundant, as it can be expressed with `flatMap`, with the
+      * same effect:
+      * {{{
+      *   trigger.flatMap(_ => task)
+      * }}}
+      *
+      * The syntax provided by Cats can also help:
+      * {{{
+      *   import cats.syntax.all._
+      *
+      *   trigger *> task
+      * }}}
+      */
+    @deprecated("Please use flatMap", "3.0.0")
+    def delayExecutionWith(trigger: Task[Any]): Task[A] = {
+      // $COVERAGE-OFF$
+      trigger.flatMap(_ => self)
+      // $COVERAGE-ON$
+    }
+
+    /** DEPRECATED - please use [[Task.flatMap flatMap]].
+      *
+      * The reason for the deprecation is that this operation is
+      * redundant, as it can be expressed with `flatMap` and `map`,
+      * with the same effect:
+      *
+      * {{{
+      *   task.flatMap(a => selector(a).map(_ => a))
+      * }}}
+      */
+    @deprecated("Please rewrite in terms of flatMap", "3.0.0")
+    def delayResultBySelector[B](selector: A => Task[B]): Task[A] = {
+      // $COVERAGE-OFF$
+      self.flatMap(a => selector(a).map(_ => a))
+      // $COVERAGE-OFF$
+    }
+  }
+
+  // -- INTERNALS
+
   /** [[Task]] state describing an immediate synchronous value. */
   private[eval] final case class Now[A](value: A) extends Task[A] {
     // Optimizations to avoid the run-loop
@@ -2396,7 +2907,7 @@ object Task extends TaskInstancesLevel1 {
     *
     * DO NOT use directly, as it is UNSAFE to use, unless you know
     * what you're doing. Prefer [[Task.runAsync(cb* Task.runAsync]]
-    * and `Task.fork`.
+    * and [[Task.executeAsync .executeAsync]].
     */
   def unsafeStartAsync[A](source: Task[A], context: Context, cb: Callback[A]): Unit =
     TaskRunLoop.restartAsync(source, context, cb, null, null, null)
@@ -2409,7 +2920,7 @@ object Task extends TaskInstancesLevel1 {
     *
     * DO NOT use directly, as it is UNSAFE to use, unless you know
     * what you're doing. Prefer [[Task.runAsync(cb* Task.runAsync]]
-    * and `Task.fork`.
+    * and [[Task.executeAsync .executeAsync]].
     */
   def unsafeStartTrampolined[A](source: Task[A], context: Context, cb: Callback[A]): Unit =
     context.scheduler.execute(new TrampolinedRunnable {
@@ -2442,7 +2953,7 @@ object Task extends TaskInstancesLevel1 {
   private object AttemptTask extends StackFrame[Any, Task[Either[Throwable, Any]]] {
     override def apply(a: Any): Task[Either[Throwable, Any]] =
       new Now(new Right(a))
-    override def recover(e: Throwable): Task[Either[Throwable, Any]] =
+    override def recover(e: Throwable, r: UncaughtExceptionReporter): Task[Either[Throwable, Any]] =
       new Now(new Left(e))
   }
 
@@ -2450,7 +2961,7 @@ object Task extends TaskInstancesLevel1 {
   private object MaterializeTask extends StackFrame[Any, Task[Try[Any]]] {
     override def apply(a: Any): Task[Try[Any]] =
       new Now(new Success(a))
-    override def recover(e: Throwable): Task[Try[Any]] =
+    override def recover(e: Throwable, r: UncaughtExceptionReporter): Task[Try[Any]] =
       new Now(new Failure(e))
   }
 }
@@ -2499,7 +3010,7 @@ private[eval] abstract class TaskInstancesLevel1 extends TaskInstancesLevel0 {
     new CatsMonadToMonoid[Task, A]()(CatsAsyncForTask, A)
 }
 
-private[eval] abstract class TaskInstancesLevel0  {
+private[eval] abstract class TaskInstancesLevel0 extends TaskParallelNewtype {
   /** Global instance for `cats.effect.Effect`.
     *
     * Implied are `cats.CoflatMap`, `cats.Applicative`, `cats.Monad`,
@@ -2532,4 +3043,24 @@ private[eval] abstract class TaskInstancesLevel0  {
     */
   implicit def catsSemigroup[A](implicit A: Semigroup[A]): Semigroup[Task[A]] =
     new CatsMonadToSemigroup[Task, A]()(CatsAsyncForTask, A)
+}
+
+private[eval] abstract class TaskParallelNewtype {
+  /** Newtype encoding for an `Task` datatype that has a [[cats.Applicative]]
+    * capable of doing parallel processing in `ap` and `map2`, needed
+    * for implementing [[cats.Parallel]].
+    *
+    * Helpers are provided for converting back and forth in `Par.apply`
+    * for wrapping any `Task` value and `Par.unwrap` for unwrapping.
+    *
+    * The encoding is based on the "newtypes" project by
+    * Alexander Konovalov, chosen because it's devoid of boxing issues and
+    * a good choice until opaque types will land in Scala.
+    */
+  type Par[+A] = Par.Type[A]
+
+  /** Newtype encoding, see the [[Task.Par]] type alias
+    * for more details.
+    */
+  object Par extends Newtype1[Task]
 }
