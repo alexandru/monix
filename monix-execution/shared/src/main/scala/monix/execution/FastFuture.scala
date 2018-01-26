@@ -487,9 +487,6 @@ object FastFuture {
   final class LightPromise[A] private (private[this] val state: AtomicAny[AnyRef], isEmpty: Boolean)
     extends FastFuture[A] {
 
-    /** Really simple, non-thread safe check to protect against multiple calls. */
-    private[this] var isCompleteFlag = false
-
     /** Default constructor.
       *
       * @param ps is the [[monix.execution.atomic.PaddingStrategy PaddingStrategy]]
@@ -541,11 +538,11 @@ object FastFuture {
       * the only unknown being what value they receive.
       */
     def tryUnsafeComplete(result: Try[Any]): Boolean = {
-      if (isCompleteFlag) return false
-      isCompleteFlag = true
-
       state.get match {
-        case lp: LightPromise[_] =>
+        case _: Try[_] =>
+          false
+
+        case lp: LightPromise[Any] @unchecked =>
           lp.asInstanceOf[LightPromise[Any]]
             .compressedRoot()
             .tryUnsafeComplete(result)
@@ -556,17 +553,16 @@ object FastFuture {
             case f: Listener =>
               f.execute(result)
               true
-            case list: List[_] =>
-              var cursor = list.asInstanceOf[List[Listener]]
+            case list: List[Listener] @unchecked =>
+              var cursor = list
               while (cursor ne Nil) {
                 val f = cursor.head
                 cursor = cursor.tail
                 f.execute(result)
               }
               true
-            case lp: LightPromise[_] =>
-              lp.asInstanceOf[LightPromise[Any]]
-                .compressedRoot()
+            case lp: LightPromise[Any] @unchecked =>
+              lp.compressedRoot()
                 .tryUnsafeComplete(result)
             case _ =>
               false
@@ -597,7 +593,8 @@ object FastFuture {
       if (!tryUnsafeComplete(result))
         throw new IllegalStateException(
           "LightPromise protocol violation, complete() " +
-            "was called multiple times")
+          "was called multiple times"
+        )
     }
 
     /** Completes this `FastFuture` with a successful `value`.
@@ -645,11 +642,11 @@ object FastFuture {
       }
 
     override def isCompleted: Boolean =
-      isCompleteFlag || (state.get match {
+      state.get match {
         case _: Try[_] => true
         case ref: LightPromise[_] => ref.isCompleted
         case _ => false
-      })
+      }
 
     /** Link this promise to the root of another promise using `link()`.
       * Should only be  be called by `.flatMap`.
@@ -692,8 +689,8 @@ object FastFuture {
       */
     @tailrec private def compressedRoot(): LightPromise[A] =
       state.get match {
-        case linked: LightPromise[_] =>
-          val target = linked.asInstanceOf[LightPromise[A]].root
+        case linked: LightPromise[A] @unchecked =>
+          val target = linked.root
           if (linked eq target)
             target
           else if (state.compareAndSet(linked, target))
@@ -726,8 +723,8 @@ object FastFuture {
             link(target)
             // $COVERAGE-ON$
           }
-        case r: Try[_] =>
-          target.complete(r.asInstanceOf[Try[A]])
+        case r: Try[A] @unchecked =>
+          target.complete(r)
         case _: LightPromise[_] =>
           compressedRoot().link(target)
         case oneListener: Listener =>
@@ -738,7 +735,7 @@ object FastFuture {
             link(target) // retry
             // $COVERAGE-ON$
           }
-        case listeners: List[_] =>
+        case listeners: List[Listener] @unchecked =>
           if (state.compareAndSet(listeners, target)) {
             target.dispatchOrAddListeners(listeners.asInstanceOf[List[Listener]])
           } else {
@@ -772,10 +769,10 @@ object FastFuture {
             dispatchOrAddListener(ref) // retry
             // $COVERAGE-ON$
           }
-        case prev: LightPromise[_] =>
-          prev.asInstanceOf[LightPromise[A]].dispatchOrAddListener(ref)
-        case prev: List[_] =>
-          val list = ref :: prev.asInstanceOf[List[Listener]]
+        case prev: LightPromise[A] @unchecked =>
+          prev.dispatchOrAddListener(ref)
+        case prev: List[Listener] @unchecked =>
+          val list = ref :: prev
           if (!state.compareAndSet(prev, list)) {
             // $COVERAGE-OFF$
             dispatchOrAddListener(ref) // retry
@@ -807,10 +804,10 @@ object FastFuture {
             dispatchOrAddListeners(list) // retry
             // $COVERAGE-ON$
           }
-        case prev: LightPromise[_] =>
-          prev.asInstanceOf[LightPromise[A]].dispatchOrAddListeners(list)
-        case prev: List[_] =>
-          val list2 = list ::: prev.asInstanceOf[List[Listener]]
+        case prev: LightPromise[A] =>
+          prev.dispatchOrAddListeners(list)
+        case prev: List[Listener] @unchecked =>
+          val list2 = list ::: prev
           if (!state.compareAndSet(prev, list2)) {
             // $COVERAGE-OFF$
             dispatchOrAddListeners(list) // retry
@@ -845,10 +842,9 @@ object FastFuture {
           case ref: LightPromise[_] =>
             val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
             ref.dispatchOrAddListener(l)
-          case ref: List[_] =>
-            val list = ref.asInstanceOf[List[Listener]]
+          case list: List[Listener] @unchecked =>
             val l = if (listener != null) listener else Listener(fAny, mkCallback, ec)
-            if (!state.compareAndSet(ref, l :: list)) {
+            if (!state.compareAndSet(list, l :: list)) {
               // $COVERAGE-OFF$
               loop(state, fAny, l) // retry?
               // $COVERAGE-ON$

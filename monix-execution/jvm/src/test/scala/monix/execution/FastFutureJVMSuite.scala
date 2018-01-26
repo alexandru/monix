@@ -32,8 +32,10 @@ object FastFutureJVMSuite extends SimpleTestSuite {
   }
 
   test("block successful future completion") {
-    val f = FastFuture.successful(1)
-    assertEquals(Await.result(f, Duration.Inf), 1)
+    for (_ <- 0 until 1000) {
+      val f = FastFuture.successful(1)
+      assertEquals(Await.result(f, Duration.Inf), 1)
+    }
   }
 
   test("block for FastFuture.never") {
