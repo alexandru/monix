@@ -48,6 +48,9 @@ Features for `monix-eval`:
   Bracket for `Task` / `Coeval`, `Task.cancelable` and `Task.onCancelRaiseError`
 - [PR #596](https://github.com/monix/monix/pull/596):
   add `Fiber` interface, refactor `memoize` for `Task` and `Coeval`
+- [PR #602](https://github.com/monix/monix/pull/602)
+  ([#595](https://github.com/monix/monix/issues/595)):
+  `TaskLocal` should expose `Local`
 
 Features for `monix-reactive`:
 
@@ -135,6 +138,8 @@ Features for `monix-tail`:
 - [PR #591](https://github.com/monix/monix/pull/591)
   ([#580](https://github.com/monix/monix/issues/580)):
   improve strictness of `Eq` of `Iterant`, fix `doOnFinish` on `Last` 
+- [PR #600](https://github.com/monix/monix/pull/600):
+  Add `Sync` & `Async` instances for `Iterant`
 
 Bug fixes:
 
@@ -173,6 +178,8 @@ Chores:
   fix comment mentioning Akka instead of Monix
 - [PR #588](https://github.com/monix/monix/pull/588):
   update copyright headers for Scala 2.11 source files
+- [PR #605](https://github.com/monix/monix/pull/605):
+  Make concurrent `Atomic` tests more resilient to timeouts
 
 ## Version 2.3.3 (Jan 21, 2018)
 
