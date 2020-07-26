@@ -176,7 +176,7 @@ abstract class Callback[-E, -A] extends (Either[E, A] => Unit) {
   * @define isThreadSafe '''THREAD-SAFETY''': the returned callback is
   *         thread-safe.
   *
-  *         In case `onSuccess` and `onError` get called multiple times,
+  *         In case `onSuccess` and `onError` get() called multiple times,
   *         from multiple threads even, the implementation protects against
   *         access violations and throws a
   *         [[monix.execution.exceptions.CallbackCalledMultipleTimesException CallbackCalledMultipleTimesException]].
@@ -424,7 +424,7 @@ object Callback {
     }
 
     override final def run(): Unit = {
-      state.get match {
+      state.get() match {
         case 1 =>
           val v = value
           value = null.asInstanceOf[A]

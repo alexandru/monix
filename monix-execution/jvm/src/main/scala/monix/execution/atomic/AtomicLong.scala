@@ -39,14 +39,16 @@ final class AtomicLong private (private[this] val ref: BoxedLong) extends Atomic
   def lazySet(update: Long): Unit =
     ref.lazySet(update)
 
-  def increment(v: Int = 1): Unit =
-    ref.getAndAdd(v)
+  def increment(v: Int = 1): Unit = {
+    ref.getAndAdd(v.toLong)
+    ()
+  }
 
   def incrementAndGet(v: Int = 1): Long =
-    ref.getAndAdd(v) + v
+    ref.getAndAdd(v.toLong) + v
 
   def getAndIncrement(v: Int = 1): Long =
-    ref.getAndAdd(v)
+    ref.getAndAdd(v.toLong)
 
   def getAndAdd(v: Long): Long =
     ref.getAndAdd(v)
@@ -54,8 +56,10 @@ final class AtomicLong private (private[this] val ref: BoxedLong) extends Atomic
   def addAndGet(v: Long): Long =
     ref.getAndAdd(v) + v
 
-  def add(v: Long): Unit =
+  def add(v: Long): Unit = {
     ref.getAndAdd(v)
+    ()
+  }
 
   def subtract(v: Long): Unit =
     add(-v)

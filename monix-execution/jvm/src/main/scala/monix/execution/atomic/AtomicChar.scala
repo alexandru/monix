@@ -29,39 +29,45 @@ final class AtomicChar private (private[this] val ref: BoxedInt) extends AtomicN
   private[this] val mask = 255 + 255 * 256
 
   def get(): Char = (ref.volatileGet() & mask).asInstanceOf[Char]
-  def set(update: Char): Unit = ref.volatileSet(update)
+  def set(update: Char): Unit = ref.volatileSet(update.asInstanceOf[Int])
 
   def lazySet(update: Char): Unit =
-    ref.lazySet(update)
+    ref.lazySet(update.asInstanceOf[Int])
 
   def compareAndSet(expect: Char, update: Char): Boolean =
-    ref.compareAndSet(expect, update)
+    ref.compareAndSet(expect.asInstanceOf[Int], update.asInstanceOf[Int])
 
   def getAndSet(update: Char): Char =
-    (ref.getAndSet(update) & mask).asInstanceOf[Char]
+    (ref.getAndSet(update.asInstanceOf[Int]) & mask).asInstanceOf[Char]
 
-  def increment(v: Int = 1): Unit =
+  def increment(v: Int = 1): Unit = {
     ref.getAndAdd(v)
+    ()
+  }
 
-  def add(v: Char): Unit =
-    ref.getAndAdd(v)
+  def add(v: Char): Unit = {
+    ref.getAndAdd(v.asInstanceOf[Int]); ()
+  }
 
   def incrementAndGet(v: Int = 1): Char =
     ((ref.getAndAdd(v) + v) & mask).asInstanceOf[Char]
 
   def addAndGet(v: Char): Char =
-    ((ref.getAndAdd(v) + v) & mask).asInstanceOf[Char]
+    ((ref.getAndAdd(v.asInstanceOf[Int]) + v) & mask).asInstanceOf[Char]
 
   def getAndIncrement(v: Int = 1): Char =
     (ref.getAndAdd(v) & mask).asInstanceOf[Char]
 
   def getAndAdd(v: Char): Char =
-    (ref.getAndAdd(v) & mask).asInstanceOf[Char]
+    (ref.getAndAdd(v.asInstanceOf[Int]) & mask).asInstanceOf[Char]
 
-  def subtract(v: Char): Unit =
-    ref.getAndAdd(-v.asInstanceOf[Int])
+  def subtract(v: Char): Unit = {
+    ref.getAndAdd(-v.asInstanceOf[Int]); ()
+  }
+
   def subtractAndGet(v: Char): Char =
     ((ref.getAndAdd(-v.asInstanceOf[Int]) - v) & mask).asInstanceOf[Char]
+
   def getAndSubtract(v: Char): Char =
     (ref.getAndAdd(-v.asInstanceOf[Int]) & mask).asInstanceOf[Char]
 
@@ -113,7 +119,7 @@ object AtomicChar {
   def create(initialValue: Char, padding: PaddingStrategy, allowPlatformIntrinsics: Boolean): AtomicChar = {
     new AtomicChar(
       Factory.newBoxedInt(
-        initialValue,
+        initialValue.toInt,
         boxStrategyToPaddingStrategy(padding),
         true, // allowUnsafe
         allowPlatformIntrinsics
@@ -138,7 +144,7 @@ object AtomicChar {
   def safe(initialValue: Char, padding: PaddingStrategy): AtomicChar = {
     new AtomicChar(
       Factory.newBoxedInt(
-        initialValue,
+        initialValue.toInt,
         boxStrategyToPaddingStrategy(padding),
         false, // allowUnsafe
         false // allowJava8Intrinsics

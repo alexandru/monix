@@ -43,6 +43,7 @@ object CallbackSafetyJVMSuite extends TestSuite[SchedulerService] {
   override def tearDown(env: SchedulerService): Unit = {
     env.shutdown()
     env.awaitTermination(10.seconds)
+    ()
   }
 
   test("Callback.safe is thread-safe onSuccess") { implicit sc =>
@@ -233,7 +234,7 @@ object CallbackSafetyJVMSuite extends TestSuite[SchedulerService] {
     isForked: Boolean = false,
     retries: Int = RETRIES)(implicit sc: Scheduler): Unit = {
 
-    def run(trigger: Callback[Throwable, Int] => Unit): Unit = {
+    def run(trigger: Callback[Throwable, Int] => Any): Unit = {
       for (_ <- 0 until retries) {
         var effect = 0
         val awaitCallbacks = if (isForked) new CountDownLatch(1) else null
@@ -249,7 +250,7 @@ object CallbackSafetyJVMSuite extends TestSuite[SchedulerService] {
             throw e
         })
 
-        runConcurrently(sc)(trigger(cb))
+        runConcurrently(sc) { trigger(cb); () }
         if (isForked) await(awaitCallbacks)
         assertEquals(effect, 1)
       }

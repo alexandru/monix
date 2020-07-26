@@ -120,7 +120,7 @@ object StackedCancelable {
     /**
       * Biasing the implementation for single threaded usage
       * in push/pop — this value is caching the last value seen,
-      * in order to safe a `state.get` instruction before the
+      * in order to safe a `state.get()` instruction before the
       * `compareAndSet` happens.
       */
     private[this] var cache = initial
@@ -129,7 +129,7 @@ object StackedCancelable {
       AtomicAny.withPadding(initial, PaddingStrategy.LeftRight128)
 
     override def isCanceled: Boolean =
-      state.get == null
+      state.get() == null
 
     override def cancel(): Unit = {
       // Using getAndSet, which on Java 8 should be faster than
@@ -141,7 +141,7 @@ object StackedCancelable {
     }
 
     @tailrec def popAndPushList(list: List[Cancelable]): Cancelable = {
-      state.get match {
+      state.get() match {
         case null =>
           Cancelable.cancelAll(list)
           Cancelable.empty
@@ -165,7 +165,7 @@ object StackedCancelable {
     }
 
     @tailrec def popAndPush(value: Cancelable): Cancelable = {
-      state.get match {
+      state.get() match {
         case null =>
           value.cancel()
           Cancelable.empty
@@ -190,7 +190,7 @@ object StackedCancelable {
     }
 
     @tailrec def pushList(list: List[Cancelable]): Unit = {
-      state.get match {
+      state.get() match {
         case null =>
           Cancelable.cancelAll(list)
         case current =>
@@ -210,7 +210,7 @@ object StackedCancelable {
       } else {
         val update = value :: current
         if (!state.compareAndSet(current, update))
-          pushLoop(state.get, value) // retry
+          pushLoop(state.get(), value) // retry
         else
           cache = update
       }
@@ -224,13 +224,13 @@ object StackedCancelable {
       current match {
         case null | Nil =>
           if (isFresh) Cancelable.empty
-          else popLoop(state.get, isFresh = true)
+          else popLoop(state.get(), isFresh = true)
         case ref @ (head :: tail) =>
           if (state.compareAndSet(ref, tail)) {
             cache = tail
             head
           } else {
-            popLoop(state.get, isFresh = true) // retry
+            popLoop(state.get(), isFresh = true) // retry
           }
       }
     }

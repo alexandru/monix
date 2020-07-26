@@ -23,7 +23,7 @@ import monix.execution.internal.Platform
 import scala.util.control.NonFatal
 import monix.execution.schedulers.TrampolinedRunnable
 
-import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.Promise
 
 /** Represents a one-time idempotent action that can be used
@@ -94,8 +94,7 @@ object Cancelable {
     */
   def fromPromise[A](p: Promise[A], e: Throwable): Cancelable =
     new Cancelable {
-      def cancel(): Unit =
-        p.tryFailure(e)
+      def cancel(): Unit = { p.tryFailure(e); () }
     }
 
   /** Given a collection of cancelables, cancel them all.
@@ -107,7 +106,7 @@ object Cancelable {
     *  - for JS they are wrapped in a `CompositeException`
     */
   def cancelAll(seq: Iterable[Cancelable]): Unit = {
-    var errors = ListBuffer.empty[Throwable]
+    val errors = ArrayBuffer.empty[Throwable]
     val cursor = seq.iterator
     while (cursor.hasNext) {
       try cursor.next().cancel()

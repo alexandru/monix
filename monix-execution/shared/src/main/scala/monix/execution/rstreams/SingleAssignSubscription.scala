@@ -24,9 +24,9 @@ import scala.annotation.tailrec
   * only once to another subscription reference.
   *
   * If the assignment happens after this subscription has been canceled, then on
-  * assignment the reference will get canceled too. If the assignment
+  * assignment the reference will get() canceled too. If the assignment
   * after `request(n)` has been called on this subscription, then
-  * `request(n)` will get called immediately on the assigned reference as well.
+  * `request(n)` will get() called immediately on the assigned reference as well.
   *
   * Useful in case you need a thread-safe forward reference.
   */
@@ -40,7 +40,7 @@ final class SingleAssignSubscription private () extends Subscription {
   def :=(s: org.reactivestreams.Subscription): Unit = set(s)
 
   def set(s: org.reactivestreams.Subscription): Unit = {
-    val current = state.get
+    val current = state.get()
 
     current match {
       case Empty =>
@@ -69,7 +69,7 @@ final class SingleAssignSubscription private () extends Subscription {
 
   @tailrec
   def cancel(): Unit = {
-    val current = state.get
+    val current = state.get()
 
     current match {
       case Empty =>
@@ -93,7 +93,7 @@ final class SingleAssignSubscription private () extends Subscription {
 
   @tailrec
   def request(n: Long): Unit = {
-    val current = state.get
+    val current = state.get()
 
     current match {
       case Empty =>

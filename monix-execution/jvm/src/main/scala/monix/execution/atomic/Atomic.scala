@@ -81,7 +81,7 @@ abstract class Atomic[A] extends Serializable {
     *           the update + what should this method return when the operation succeeds.
     * @return whatever was specified by your callback, once the operation succeeds
     */
-  final def transformAndExtract[U](cb: (A) => (U, A)): U =
+  final def transformAndExtract[U](cb: A => (U, A)): U =
     macro Atomic.Macros.transformAndExtractMacro[A, U]
 
   /** Abstracts over `compareAndSet`. You specify a transformation by specifying a callback to be
@@ -95,7 +95,7 @@ abstract class Atomic[A] extends Serializable {
     *           new value that should be persisted
     * @return whatever the update is, after the operation succeeds
     */
-  final def transformAndGet(cb: (A) => A): A =
+  final def transformAndGet(cb: A => A): A =
     macro Atomic.Macros.transformAndGetMacro[A]
 
   /** Abstracts over `compareAndSet`. You specify a transformation by specifying a callback to be
@@ -109,7 +109,7 @@ abstract class Atomic[A] extends Serializable {
     *           new value that should be persisted
     * @return the old value, just prior to when the successful update happened
     */
-  final def getAndTransform(cb: (A) => A): A =
+  final def getAndTransform(cb: A => A): A =
     macro Atomic.Macros.getAndTransformMacro[A]
 
   /** Abstracts over `compareAndSet`. You specify a transformation by specifying a callback to be
@@ -122,7 +122,7 @@ abstract class Atomic[A] extends Serializable {
     * @param cb is a callback that receives the current value as input and returns the `update` which is the
     *           new value that should be persisted
     */
-  final def transform(cb: (A) => A): Unit =
+  final def transform(cb: A => A): Unit =
     macro Atomic.Macros.transformMacro[A]
 }
 
@@ -195,11 +195,11 @@ object Atomic {
         if (util.isClean(cb)) {
           q"""
           val $self = $selfExpr
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $cb($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $cb($current)
           }
           """
@@ -209,11 +209,11 @@ object Atomic {
           val $self = $selfExpr
           val $fn = $cb
 
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $fn($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $fn($current)
           }
           """
@@ -235,11 +235,11 @@ object Atomic {
         if (util.isClean(cb)) {
           q"""
           val $self = $selfExpr
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $cb($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $cb($current)
           }
 
@@ -250,11 +250,11 @@ object Atomic {
           q"""
           val $self = $selfExpr
           val $fn = $cb
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $fn($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $fn($current)
           }
 
@@ -278,11 +278,11 @@ object Atomic {
         if (util.isClean(cb)) {
           q"""
           val $self = $selfExpr
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $cb($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $cb($current)
           }
 
@@ -293,11 +293,11 @@ object Atomic {
           q"""
           val $self = $selfExpr
           val $fn = $cb
-          var $current = $self.get
+          var $current = $self.get()
           var $update = $fn($current)
 
           while (!$self.compareAndSet($current, $update)) {
-            $current = $self.get
+            $current = $self.get()
             $update = $fn($current)
           }
 
@@ -325,11 +325,11 @@ object Atomic {
         if (util.isClean(cb)) {
           q"""
           val $self = $selfExpr
-          var $current = $self.get
+          var $current = $self.get()
           var ($resultVar, $updateVar) = $cb($current)
 
           while (!$self.compareAndSet($current, $updateVar)) {
-            $current = $self.get
+            $current = $self.get()
             val ($resultTmp, $updateTmp) = $cb($current)
             $updateVar = $updateTmp
             $resultVar = $resultTmp
@@ -343,11 +343,11 @@ object Atomic {
           val $self = $selfExpr
           val $fn = $cb
 
-          var $current = $self.get
+          var $current = $self.get()
           var ($resultVar, $updateVar) = $fn($current)
 
           while (!$self.compareAndSet($current, $updateVar)) {
-            $current = $self.get
+            $current = $self.get()
             val ($resultTmp, $updateTmp) = $fn($current)
             $updateVar = $updateTmp
             $resultVar = $resultTmp
@@ -383,7 +383,7 @@ object Atomic {
 
     def applyMacro[A: c.WeakTypeTag](): c.Expr[A] = {
       val selfExpr = c.Expr[Atomic[A]](c.prefix.tree)
-      val tree = q"""$selfExpr.get"""
+      val tree = q"""$selfExpr.get()"""
       inlineAndReset[A](tree)
     }
 

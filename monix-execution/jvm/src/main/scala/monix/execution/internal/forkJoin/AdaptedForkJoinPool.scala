@@ -33,8 +33,10 @@ private[monix] final class AdaptedForkJoinPool(
     }
 
     Thread.currentThread match {
-      case fjw: ForkJoinWorkerThread if fjw.getPool eq this => fjt.fork()
-      case _ => super.execute(fjt)
+      case fjw: ForkJoinWorkerThread if fjw.getPool eq this => 
+        fjt.fork(); ()
+      case _ => 
+        super.execute(fjt)
     }
   }
 }

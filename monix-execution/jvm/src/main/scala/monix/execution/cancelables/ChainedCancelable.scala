@@ -74,7 +74,7 @@ import monix.execution.atomic.{AtomicAny, PaddingStrategy}
   * The problem that it solves in Monix's codebase is that various
   * `flatMap` implementations need to be memory safe.
   * By "chaining" cancelable references, we allow the garbage collector
-  * to get rid of references created in a `flatMap` loop, the goal
+  * to get() rid of references created in a `flatMap` loop, the goal
   * being to consume a constant amount of memory. Thus this
   * implementation is used for
   * [[monix.execution.CancelableFuture CancelableFuture]].
@@ -107,7 +107,7 @@ final class ChainedCancelable private (private val state: AtomicAny[AnyRef]) ext
       case null | Canceled => ()
       case ref: Cancelable => ref.cancel()
       case wr: WeakReference[_] =>
-        val cc = wr.get.asInstanceOf[CC]
+        val cc = wr.get().asInstanceOf[CC]
         if (cc != null) cc.cancel()
     }
   }
@@ -116,12 +116,12 @@ final class ChainedCancelable private (private val state: AtomicAny[AnyRef]) ext
     val state = this.state
 
     while (true) {
-      state.get match {
+      state.get() match {
         case Canceled =>
           value.cancel()
           return
         case wr: WeakReference[_] =>
-          val cc = wr.get.asInstanceOf[CC]
+          val cc = wr.get().asInstanceOf[CC]
           if (cc != null) cc.update(value)
           return
         case current =>
@@ -172,9 +172,9 @@ final class ChainedCancelable private (private val state: AtomicAny[AnyRef]) ext
       while (continue) {
         // Short-circuit if we discover a cycle
         if (cursor eq this) return
-        cursor.state.get match {
+        cursor.state.get() match {
           case ref2: WeakReference[_] =>
-            cursor = ref2.get.asInstanceOf[CC]
+            cursor = ref2.get().asInstanceOf[CC]
             if (cursor eq null) {
               cursor = null
               continue = false
@@ -198,7 +198,7 @@ final class ChainedCancelable private (private val state: AtomicAny[AnyRef]) ext
         case Canceled => cancel()
         case _: IsDummy => ()
         case w: WeakReference[_] =>
-          val cc = w.get
+          val cc = w.get()
           if (cc != null) cc.asInstanceOf[CC].update(newRoot)
         case prev: Cancelable =>
           newRoot.update(prev)

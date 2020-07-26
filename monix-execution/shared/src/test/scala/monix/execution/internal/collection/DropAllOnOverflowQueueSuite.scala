@@ -25,6 +25,7 @@ object DropAllOnOverflowQueueSuite extends SimpleTestSuite {
     val q = DropAllOnOverflowQueue[String](100)
     intercept[NullPointerException] {
       q.offer(null)
+      ()
     }
     ()
   }
@@ -44,10 +45,12 @@ object DropAllOnOverflowQueueSuite extends SimpleTestSuite {
 
     intercept[IllegalArgumentException] {
       DropAllOnOverflowQueue[Int](0)
+      ()
     }
 
     intercept[IllegalArgumentException] {
       DropAllOnOverflowQueue[Int](-100)
+      ()
     }
     ()
   }
